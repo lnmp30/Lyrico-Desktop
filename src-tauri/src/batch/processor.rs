@@ -1,0 +1,130 @@
+use crate::audio::{read_track, write_replay_gain_tags, ArtworkMode};
+use crate::database::Database;
+use crate::models::{AudioTrack, BatchTask, BatchTaskItem, ReplayGainProgress};
+use crate::replay_gain::analyze_track;
+use serde_json::json;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{AppHandle, Emitter};
+
+pub(super) struct ProcessContext<'a> {
+    pub(super) app: &'a AppHandle,
+    pub(super) database: &'a Database,
+    pub(super) task: &'a BatchTask,
+    pub(super) item: &'a BatchTaskItem,
+    pub(super) artist_separator: &'a str,
+    pub(super) cancelled: &'a AtomicBool,
+}
+
+pub(super) struct ProcessOutcome {
+    pub(super) result_json: Option<String>,
+    pub(super) updated_track: Option<AudioTrack>,
+}
+
+#[derive(Debug)]
+pub(super) enum ProcessError {
+    Skipped(String),
+    Cancelled(String),
+    Failed(String),
+}
+
+pub(super) trait BatchProcessor: Send + Sync {
+    fn process(
+        &self,
+        context: ProcessContext<'_>,
+        on_progress: &mut dyn FnMut(f64),
+    ) -> Result<ProcessOutcome, ProcessError>;
+}
+
+pub(super) fn processor_for(task_type: &str) -> Result<Box<dyn BatchProcessor>, String> {
+    match task_type {
+        "matchMetadata" => Ok(Box::new(super::metadata::MatchMetadataProcessor)),
+        "formatLyrics" => Ok(Box::new(super::lyrics::LyricsFormatProcessor)),
+        "replayGain" => Ok(Box::new(ReplayGainProcessor)),
+        other => Err(format!("No Rust batch processor is registered for {other}")),
+    }
+}
+
+struct ReplayGainProcessor;
+
+impl BatchProcessor for ReplayGainProcessor {
+    fn process(
+        &self,
+        context: ProcessContext<'_>,
+        on_progress: &mut dyn FnMut(f64),
+    ) -> Result<ProcessOutcome, ProcessError> {
+        if context.cancelled.load(Ordering::Relaxed) {
+            return Err(ProcessError::Cancelled("Batch item cancelled".to_string()));
+        }
+        let path = Path::new(&context.item.song_path);
+        let existing = read_track(path, context.artist_separator, ArtworkMode::None)
+            .map_err(|error| ProcessError::Failed(error.to_string()))?;
+        if !existing.replay_gain_track_gain.is_empty()
+            || !existing.replay_gain_track_peak.is_empty()
+            || !existing.replay_gain_album_gain.is_empty()
+            || !existing.replay_gain_album_peak.is_empty()
+            || !existing.replay_gain_reference_loudness.is_empty()
+        {
+            return Err(ProcessError::Skipped(
+                "ReplayGain already exists".to_string(),
+            ));
+        }
+
+        let job_id = format!("{}:{}", context.task.task_id, context.item.item_id);
+        let analysis = analyze_track(job_id.clone(), path, context.cancelled, |progress| {
+            on_progress(f64::from(progress));
+            let _ = context.app.emit(
+                "replay-gain-progress",
+                ReplayGainProgress {
+                    job_id: job_id.clone(),
+                    path: context.item.song_path.clone(),
+                    percent: (progress * 100.0).round() as u8,
+                    status: "running".to_string(),
+                    message: None,
+                },
+            );
+        })
+        .map_err(|error| {
+            if context.cancelled.load(Ordering::Relaxed)
+                || error.to_lowercase().contains("cancelled")
+            {
+                ProcessError::Cancelled(error)
+            } else {
+                ProcessError::Failed(error)
+            }
+        })?;
+        if context.cancelled.load(Ordering::Relaxed) {
+            return Err(ProcessError::Cancelled("Batch item cancelled".to_string()));
+        }
+        let updated = write_replay_gain_tags(
+            path,
+            context.artist_separator,
+            analysis.track_gain.clone(),
+            analysis.track_peak.clone(),
+        )
+        .map_err(ProcessError::Failed)?;
+        let _ = context.app.emit(
+            "replay-gain-progress",
+            ReplayGainProgress {
+                job_id,
+                path: context.item.song_path.clone(),
+                percent: 100,
+                status: "completed".to_string(),
+                message: None,
+            },
+        );
+        Ok(ProcessOutcome {
+            result_json: Some(
+                json!({
+                    "trackGain": analysis.track_gain,
+                    "trackPeak": analysis.track_peak,
+                    "referenceLoudness": analysis.reference_loudness,
+                    "loudnessLufs": analysis.loudness_lufs,
+                    "truePeak": analysis.peak,
+                })
+                .to_string(),
+            ),
+            updated_track: Some(updated),
+        })
+    }
+}

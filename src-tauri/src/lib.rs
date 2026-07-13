@@ -1,4 +1,5 @@
 mod audio;
+mod batch;
 mod commands;
 mod config;
 mod database;
@@ -7,16 +8,17 @@ mod paths;
 mod plugins;
 mod replay_gain;
 
+use batch::BatchManager;
 use commands::{
-    analyze_replay_gain, cancel_replay_gain, create_batch_task, fetch_remote_image,
-    finish_batch_task, get_storage_info, install_source_plugin_archive, invoke_source_plugin,
-    load_artist_split_config, load_batch_task_items, load_batch_tasks, load_desktop_settings,
-    load_library_folders, load_library_track, load_library_tracks, load_source_plugins,
-    load_track_covers, read_audio_file, read_image_file, read_text_file, remove_library_folder,
-    save_artist_split_config, save_audio_tags, save_desktop_settings, save_source_plugin_settings,
-    scan_folder, set_source_plugin_enabled, start_batch_task, uninstall_source_plugin,
-    update_batch_task_item, upsert_library_folder, write_image_file, write_text_file,
-    write_track_replay_gain,
+    analyze_replay_gain, cancel_batch_task, cancel_batch_task_item, cancel_replay_gain,
+    create_batch_task, fetch_remote_image, get_storage_info, install_source_plugin_archive,
+    invoke_source_plugin, load_artist_split_config, load_batch_task_items, load_batch_tasks,
+    load_desktop_settings, load_library_folders, load_library_track, load_library_tracks,
+    load_source_plugins, load_track_covers, read_audio_file, read_image_file, read_text_file,
+    remove_library_folder, retry_failed_batch_items, save_artist_split_config, save_audio_tags,
+    save_desktop_settings, save_source_plugin_settings, scan_folder, set_source_plugin_enabled,
+    start_batch_task, uninstall_source_plugin, upsert_library_folder, write_image_file,
+    write_text_file,
 };
 use database::Database;
 use paths::resolve_data_paths;
@@ -29,6 +31,7 @@ pub(crate) struct AppState {
     pub(crate) database: Database,
     pub(crate) active_scans: Mutex<HashSet<String>>,
     pub(crate) active_replay_gain: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub(crate) batch_manager: BatchManager,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -46,10 +49,14 @@ pub fn run() {
             config::migrate_legacy_artist_split_config(&app.handle(), legacy_artist_split)
                 .map_err(std::io::Error::other)?;
             app.manage(AppState {
-                database,
+                database: database.clone(),
                 active_scans: Mutex::new(HashSet::new()),
                 active_replay_gain: Mutex::new(HashMap::new()),
+                batch_manager: BatchManager::new(database),
             });
+            app.state::<AppState>()
+                .batch_manager
+                .recover(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -77,9 +84,9 @@ pub fn run() {
             load_batch_tasks,
             load_batch_task_items,
             start_batch_task,
-            update_batch_task_item,
-            finish_batch_task,
-            write_track_replay_gain,
+            cancel_batch_task,
+            cancel_batch_task_item,
+            retry_failed_batch_items,
             load_source_plugins,
             install_source_plugin_archive,
             set_source_plugin_enabled,

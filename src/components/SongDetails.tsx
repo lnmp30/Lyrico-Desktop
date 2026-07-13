@@ -551,12 +551,13 @@ function isEmptyTagValue(value: unknown) {
 }
 
 function formatPluginLyrics(result: unknown, format: LyricFormat, settings: DesktopSettings) {
-  const rendered = renderPluginLyrics(result, format, {
+  return renderPluginLyrics(result, format, {
     showTranslation: settings.showTranslation,
     showRomanization: settings.showRomanization,
     onlyTranslationIfAvailable: settings.onlyTranslationIfAvailable,
+    removeEmptyLines: settings.removeEmptyLyricLines,
+    conversionMode: settings.lyricsConversionMode,
   });
-  return settings.removeEmptyLyricLines ? removeEmptyLyricsLines(rendered) : rendered;
 }
 
 function tagFieldLabel(key: keyof TagForm, t: TFunction) {

@@ -40,6 +40,8 @@ aes = "0.8.4"
 ecb = { version = "0.1.2", features = ["alloc", "block-padding"] }
 flate2 = "1.1.9"
 cipher = { version = "0.4.4", features = ["alloc", "block-padding"] }
+quick-xml = "0.41.0"
+regex = "1.12.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

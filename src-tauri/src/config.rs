@@ -13,6 +13,7 @@ const CONFIG_SCHEMA_VERSION: u32 = 2;
 pub(crate) struct DesktopSettings {
     pub(crate) search_page_size: u32,
     pub(crate) lyric_format: String,
+    pub(crate) lyrics_conversion_mode: String,
     pub(crate) show_translation: bool,
     pub(crate) show_romanization: bool,
     pub(crate) only_translation_if_available: bool,
@@ -24,6 +25,7 @@ impl Default for DesktopSettings {
         Self {
             search_page_size: 10,
             lyric_format: "verbatimLrc".to_string(),
+            lyrics_conversion_mode: "none".to_string(),
             show_translation: true,
             show_romanization: true,
             only_translation_if_available: false,
@@ -64,6 +66,12 @@ pub(crate) fn save_desktop_settings(
         "plainLrc" | "verbatimLrc" | "enhancedLrc" | "ttml"
     ) {
         settings.lyric_format = DesktopSettings::default().lyric_format;
+    }
+    if !matches!(
+        settings.lyrics_conversion_mode.as_str(),
+        "none" | "traditionalToSimplified" | "simplifiedToTraditional"
+    ) {
+        settings.lyrics_conversion_mode = DesktopSettings::default().lyrics_conversion_mode;
     }
     let mut config = load_config(app)?;
     config.schema_version = CONFIG_SCHEMA_VERSION;

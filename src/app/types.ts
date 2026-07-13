@@ -114,6 +114,7 @@ export type StorageInfo = {
 export type DesktopSettings = {
   searchPageSize: number;
   lyricFormat: "plainLrc" | "verbatimLrc" | "enhancedLrc" | "ttml";
+  lyricsConversionMode: "none" | "traditionalToSimplified" | "simplifiedToTraditional";
   showTranslation: boolean;
   showRomanization: boolean;
   onlyTranslationIfAvailable: boolean;

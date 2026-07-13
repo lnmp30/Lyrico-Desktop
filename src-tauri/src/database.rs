@@ -488,6 +488,47 @@ impl Database {
             .map_err(|error| error.to_string())
     }
 
+    pub(crate) async fn load_batch_task(&self, task_id: &str) -> Result<BatchTask, String> {
+        let connection = self.lock()?;
+        load_batch_task(&connection, task_id)
+    }
+
+    pub(crate) async fn recover_interrupted_batch_tasks(&self) -> Result<Vec<String>, String> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let timestamp = now().to_string();
+        transaction
+            .execute(
+                "UPDATE batch_task_items SET status = 'queued', progress = 0,
+                    error_message = 'Recovered after application restart', updated_at = ?1
+             WHERE status = 'running'",
+                params![timestamp],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE batch_tasks SET status = 'queued', started_at = NULL, finished_at = NULL,
+                    error_message = 'Recovered after application restart', updated_at = ?1
+             WHERE status = 'running'",
+                params![timestamp],
+            )
+            .map_err(|error| error.to_string())?;
+        let task_ids = {
+            let mut statement = transaction.prepare(
+                "SELECT task_id FROM batch_tasks WHERE status = 'queued' ORDER BY created_at, task_id",
+            ).map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(task_ids)
+    }
+
     pub(crate) async fn load_batch_task_items(
         &self,
         task_id: &str,
@@ -523,6 +564,7 @@ impl Database {
         load_batch_task(&connection, task_id)
     }
 
+    #[cfg(test)]
     pub(crate) async fn update_batch_task_item(
         &self,
         task_id: &str,
@@ -571,6 +613,100 @@ impl Database {
             .map_err(|error| error.to_string())?;
         transaction.commit().map_err(|error| error.to_string())?;
         load_batch_task(&connection, task_id)
+    }
+
+    pub(crate) async fn update_batch_task_item_result(
+        &self,
+        task_id: &str,
+        item_id: &str,
+        status: &str,
+        progress: f64,
+        result_json: Option<String>,
+        error_message: Option<String>,
+    ) -> Result<BatchTask, String> {
+        if ![
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "skipped",
+            "cancelled",
+        ]
+        .contains(&status)
+        {
+            return Err("Unsupported batch item status".to_string());
+        }
+        let connection = self.lock()?;
+        let timestamp = now().to_string();
+        let changed = connection
+            .execute(
+                "UPDATE batch_task_items SET status = ?3, progress = ?4, result_json = ?5,
+                    error_message = ?6, updated_at = ?7 WHERE task_id = ?1 AND item_id = ?2",
+                params![
+                    task_id,
+                    item_id,
+                    status,
+                    progress.clamp(0.0, 1.0),
+                    result_json,
+                    error_message,
+                    timestamp
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed != 1 {
+            return Err("Batch task item was not found".to_string());
+        }
+        connection.execute(
+            "UPDATE batch_tasks SET
+                current = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status IN ('succeeded','failed','skipped','cancelled')),
+                success_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'succeeded'),
+                failure_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'failed'),
+                skipped_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'skipped'),
+                updated_at = ?2 WHERE task_id = ?1 AND status = 'running'",
+            params![task_id, timestamp],
+        ).map_err(|error| error.to_string())?;
+        load_batch_task(&connection, task_id)
+    }
+
+    pub(crate) async fn cancel_pending_batch_items(
+        &self,
+        task_id: &str,
+        reason: &str,
+    ) -> Result<BatchTask, String> {
+        let connection = self.lock()?;
+        let timestamp = now().to_string();
+        connection.execute(
+            "UPDATE batch_task_items SET status = 'cancelled', error_message = ?2, updated_at = ?3
+             WHERE task_id = ?1 AND status IN ('queued', 'running')",
+            params![task_id, reason, timestamp],
+        ).map_err(|error| error.to_string())?;
+        connection.execute(
+            "UPDATE batch_tasks SET current = total,
+                success_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'succeeded'),
+                failure_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'failed'),
+                skipped_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'skipped'),
+                updated_at = ?2 WHERE task_id = ?1 AND status = 'running'",
+            params![task_id, timestamp],
+        ).map_err(|error| error.to_string())?;
+        load_batch_task(&connection, task_id)
+    }
+
+    pub(crate) async fn log_batch_event(
+        &self,
+        level: &str,
+        message: &str,
+        detail: Option<String>,
+        related_id: &str,
+    ) -> Result<(), String> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "INSERT INTO app_logs (created_at, level, type, tag, message, detail, related_id)
+             VALUES (?1, ?2, 'batch', 'BatchManager', ?3, ?4, ?5)",
+                params![now().to_string(), level, message, detail, related_id],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     pub(crate) async fn finish_batch_task(
@@ -1145,6 +1281,56 @@ mod tests {
                 )
                 .await
                 .is_err());
+        });
+    }
+
+    #[test]
+    fn interrupted_batch_tasks_are_requeued_for_safe_recovery() {
+        tauri::async_runtime::block_on(async {
+            let database = Database::in_memory().await.expect("database should open");
+            let task = database
+                .create_batch_task(
+                    "replayGain",
+                    &["song.flac".to_string()],
+                    Some(r#"{"concurrency":3}"#.to_string()),
+                )
+                .await
+                .expect("task should be created");
+            database
+                .start_batch_task(&task.task_id)
+                .await
+                .expect("task should start");
+            let item = database
+                .load_batch_task_items(&task.task_id)
+                .await
+                .expect("items should load")
+                .remove(0);
+            database
+                .update_batch_task_item(&task.task_id, &item.item_id, "running", 0.4, None)
+                .await
+                .expect("item should run");
+
+            let recovered = database
+                .recover_interrupted_batch_tasks()
+                .await
+                .expect("recovery should succeed");
+            assert_eq!(recovered, vec![task.task_id.clone()]);
+            let recovered_task = database
+                .load_batch_task(&task.task_id)
+                .await
+                .expect("task should load");
+            let recovered_item = database
+                .load_batch_task_items(&task.task_id)
+                .await
+                .expect("items should load")
+                .remove(0);
+            assert_eq!(recovered_task.status, "queued");
+            assert_eq!(recovered_item.status, "queued");
+            assert_eq!(recovered_item.progress, Some(0.0));
+            assert_eq!(
+                recovered_item.error_message.as_deref(),
+                Some("Recovered after application restart")
+            );
         });
     }
 }

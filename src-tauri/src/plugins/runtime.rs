@@ -313,9 +313,7 @@ impl HostApi {
                 &string(&payload, "base64"),
             )?)?)),
             name if name.starts_with("http.") => http_call(name, &payload),
-            name if name.starts_with("xml.") => {
-                Err(format!("Host API {name} is not implemented yet"))
-            }
+            name if name.starts_with("xml.") => super::xml::call(name, &payload),
             _ => Err(format!("Unsupported host API: {name}")),
         }
     }
@@ -543,6 +541,10 @@ const SUPPORTED_HOST_APIS: &[&str] = &[
     "http.post",
     "http.getBytes",
     "http.postBytesResponse",
+    "xml.getRootAttributes",
+    "xml.findElements",
+    "xml.replaceChildrenByAttr",
+    "xml.removeElements",
     "log.debug",
     "log.warn",
     "log.error",
@@ -562,7 +564,8 @@ const HOST_BOOTSTRAP: &str = r#"
   bytes:{xor:function(v,k){return call('bytes.xor',{bytes:Array.from(v||[]),key:Array.from(k||[])})},xorBase64:function(v,k){return call('bytes.xorBase64',{base64:String(v||''),key:Array.from(k||[])})}},
   compression:{inflateBytesToText:function(v){return call('compression.inflateBytesToText',{bytes:Array.from(v||[])})},inflateBase64ToText:function(v){return call('compression.inflateBase64ToText',{base64:String(v||'')})}},
   http:{getText:function(u,o){o=opts(o);return call('http.getText',Object.assign({url:String(u||'')},o))},postText:function(u,v,o){return call('http.postText',body(u,v,o))},postBytes:function(u,v,o){return call('http.postBytes',body(u,v,o))},get:function(u,o){o=opts(o);return call('http.get',Object.assign({url:String(u||'')},o))},post:function(u,v,o){return call('http.post',body(u,v,o))},getBytes:function(u,o){o=opts(o);return call('http.getBytes',Object.assign({url:String(u||'')},o))},postBytesResponse:function(u,v,o){return call('http.postBytesResponse',body(u,v,o))}},
-  log:{debug:function(t,m){if(m===undefined){m=t;t='PlatformPlugin'}return call('log.debug',{tag:String(t||''),message:String(m||'')})},warn:function(t,m){if(m===undefined){m=t;t='PlatformPlugin'}return call('log.warn',{tag:String(t||''),message:String(m||'')})},error:function(t,m){if(m===undefined){m=t;t='PlatformPlugin'}return call('log.error',{tag:String(t||''),message:String(m||'')})}}
+   xml:{getRootAttributes:function(v){return call('xml.getRootAttributes',{xml:String(v||'')})},findElements:function(v,q){return call('xml.findElements',{xml:String(v||''),query:q||{}})},replaceChildrenByAttr:function(v,o){return call('xml.replaceChildrenByAttr',{xml:String(v||''),options:o||{}})},removeElements:function(v,q){return call('xml.removeElements',{xml:String(v||''),query:q||{}})}},
+   log:{debug:function(t,m){if(m===undefined){m=t;t='PlatformPlugin'}return call('log.debug',{tag:String(t||''),message:String(m||'')})},warn:function(t,m){if(m===undefined){m=t;t='PlatformPlugin'}return call('log.warn',{tag:String(t||''),message:String(m||'')})},error:function(t,m){if(m===undefined){m=t;t='PlatformPlugin'}return call('log.error',{tag:String(t||''),message:String(m||'')})}}
  };
  map.app=app;map.runtime=runtime;globalThis.app=app;globalThis.runtime=runtime;globalThis.Platform=map;
 })();
@@ -634,6 +637,48 @@ mod tests {
             result.as_array().is_some_and(|items| !items.is_empty()),
             "{result}"
         );
+    }
+
+    #[test]
+    #[ignore = "requires the mobile Apple plugin checkout"]
+    fn runs_mobile_apple_same_family_localization_and_keeps_cross_family_subtitle() {
+        let mobile_lib = std::env::var("LYRICO_MOBILE_APPLE_LIB")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(r"E:\Lyrico\Lyrico-Plugins\apple\lib\01_apple_api.js")
+            });
+        let root = std::env::temp_dir().join(format!("lyrico-apple-xml-runtime-{}", now_ms()));
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::copy(&mobile_lib, root.join("lib/01_apple_api.js")).unwrap();
+        fs::write(
+            root.join("source.js"),
+            "function searchSongs(request) { return [{ id: 'localized', title: applyAppleOfficialLocalizationToTtml(request.ttml, request.language) }]; }",
+        )
+        .unwrap();
+        let plugin = fixture_plugin(&root, true);
+        let chinese = r#"<tt xml:lang="zh-Hant" xmlns:itunes="http://www.apple.com/itunes"><body><div><p itunes:key="L1">這裡有故事</p></div></body><metadata><translations><translation xml:lang="zh-Hans"><text for="L1">这里有故事</text></translation></translations></metadata></tt>"#;
+        let localized = invoke(
+            &plugin,
+            "searchSongs",
+            json!({"ttml":chinese,"language":"zh-Hans"}),
+        )
+        .unwrap();
+        let localized = localized[0]["title"].as_str().unwrap();
+        assert!(localized.contains("xml:lang=\"zh-Hans\""));
+        assert!(localized.contains(">这里有故事</p>"));
+        assert!(!localized.contains("<translation "));
+
+        let english = r#"<tt xml:lang="en" xmlns:itunes="http://www.apple.com/itunes"><body><div><p itunes:key="L1">A story</p></div></body><metadata><translations><translation xml:lang="zh-Hans"><text for="L1">一个故事</text></translation></translations></metadata></tt>"#;
+        let unchanged = invoke(
+            &plugin,
+            "searchSongs",
+            json!({"ttml":english,"language":"zh-Hans"}),
+        )
+        .unwrap();
+        let unchanged = unchanged[0]["title"].as_str().unwrap();
+        assert!(unchanged.contains(">A story</p>"));
+        assert!(unchanged.contains("<translation xml:lang=\"zh-Hans\""));
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn fixture_plugin(root: &Path, enabled: bool) -> SourcePlugin {

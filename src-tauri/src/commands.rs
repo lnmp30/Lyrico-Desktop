@@ -1,6 +1,6 @@
 use crate::audio::{
     is_audio_path, read_cover_thumbnail, read_image_data_url, read_track, save_tags,
-    write_image_data_url, write_replay_gain_tags, ArtworkMode,
+    write_image_data_url, ArtworkMode,
 };
 use crate::config as app_config;
 use crate::config::DesktopSettings;
@@ -195,57 +195,61 @@ pub(crate) async fn load_batch_task_items(
 
 #[tauri::command]
 pub(crate) async fn start_batch_task(
+    app: AppHandle,
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<BatchTask, String> {
-    state.database.start_batch_task(&task_id).await
+    state.batch_manager.start_task(app, task_id).await
 }
 
 #[tauri::command]
-pub(crate) async fn update_batch_task_item(
+pub(crate) async fn cancel_batch_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<BatchTask, String> {
+    state.batch_manager.cancel_task(&app, &task_id).await
+}
+
+#[tauri::command]
+pub(crate) async fn cancel_batch_task_item(
     state: State<'_, AppState>,
     task_id: String,
     item_id: String,
-    status: String,
-    progress: f64,
-    error_message: Option<String>,
 ) -> Result<BatchTask, String> {
-    state
-        .database
-        .update_batch_task_item(&task_id, &item_id, &status, progress, error_message)
-        .await
+    state.batch_manager.cancel_item(&task_id, &item_id).await
 }
 
 #[tauri::command]
-pub(crate) async fn finish_batch_task(
-    state: State<'_, AppState>,
-    task_id: String,
-    status: String,
-    error_message: Option<String>,
-) -> Result<BatchTask, String> {
-    state
-        .database
-        .finish_batch_task(&task_id, &status, error_message)
-        .await
-}
-
-#[tauri::command]
-pub(crate) async fn write_track_replay_gain(
+pub(crate) async fn retry_failed_batch_items(
     app: AppHandle,
     state: State<'_, AppState>,
-    path: String,
-    track_gain: String,
-    track_peak: String,
-) -> Result<AudioTrack, String> {
-    let artist_separator = app_config::load_artist_split_config(&app)?.artist_separator;
-    let path_buf = PathBuf::from(&path);
-    let track = tauri::async_runtime::spawn_blocking(move || {
-        write_replay_gain_tags(&path_buf, &artist_separator, track_gain, track_peak)
-    })
-    .await
-    .map_err(|error| error.to_string())??;
-    state.database.update_track_summary(&track).await?;
-    Ok(track)
+    task_id: String,
+    item_ids: Option<Vec<String>>,
+) -> Result<BatchTask, String> {
+    let source_task = state.database.load_batch_task(&task_id).await?;
+    let requested = item_ids.map(|ids| ids.into_iter().collect::<std::collections::HashSet<_>>());
+    let paths = state
+        .database
+        .load_batch_task_items(&task_id)
+        .await?
+        .into_iter()
+        .filter(|item| item.status == "failed")
+        .filter(|item| {
+            requested
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&item.item_id))
+        })
+        .map(|item| item.song_path)
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Err("No failed batch items are available to retry".to_string());
+    }
+    let task = state
+        .database
+        .create_batch_task(&source_task.task_type, &paths, source_task.config_json)
+        .await?;
+    state.batch_manager.start_task(app, task.task_id).await
 }
 
 #[tauri::command]

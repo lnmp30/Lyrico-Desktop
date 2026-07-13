@@ -84,6 +84,13 @@ export function SettingsPage({
                       { value: "ttml", label: t("lyrics.formats.ttml") },
                     ]} />
                   </SettingRow>
+                  <SettingRow title={t("settings.lyricsConversionMode")} description={t("settings.lyricsConversionModeHint")}>
+                    <Select value={settings.lyricsConversionMode} onChange={(value) => update("lyricsConversionMode", value)} options={[
+                      { value: "none", label: t("settings.conversionNone") },
+                      { value: "traditionalToSimplified", label: t("settings.conversionTraditionalToSimplified") },
+                      { value: "simplifiedToTraditional", label: t("settings.conversionSimplifiedToTraditional") },
+                    ]} />
+                  </SettingRow>
                   <SettingRow title={t("settings.includeTranslation")} description={t("settings.includeTranslationHint")}><Switch checked={settings.showTranslation} onChange={(value) => onChangeSettings({ ...settings, showTranslation: value, onlyTranslationIfAvailable: value ? settings.onlyTranslationIfAvailable : false })} /></SettingRow>
                   <SettingRow title={t("settings.onlyTranslation")} description={t("settings.onlyTranslationHint")}><Switch disabled={!settings.showTranslation} checked={settings.onlyTranslationIfAvailable} onChange={(value) => update("onlyTranslationIfAvailable", value)} /></SettingRow>
                   <SettingRow title={t("settings.includeRomanization")} description={t("settings.includeRomanizationHint")}><Switch checked={settings.showRomanization} onChange={(value) => update("showRomanization", value)} /></SettingRow>

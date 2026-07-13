@@ -258,6 +258,25 @@ pub(crate) fn write_replay_gain_tags(
     read_track(path, artist_separator, ArtworkMode::None).map_err(|error| error.to_string())
 }
 
+pub(crate) fn write_lyrics_tag(
+    path: &Path,
+    artist_separator: &str,
+    lyrics: String,
+) -> Result<AudioTrack, String> {
+    let mut tagged_file = lofty::read_from_path(path).map_err(|error| error.to_string())?;
+    let tag_type = tagged_file.primary_tag_type();
+    if tagged_file.primary_tag().is_none() {
+        tagged_file.insert_tag(Tag::new(tag_type));
+    }
+    let tag = tagged_file
+        .primary_tag_mut()
+        .ok_or_else(|| "This audio format does not support writable primary tags".to_string())?;
+    set_text_item(tag, ItemKey::Lyrics, lyrics);
+    tag.save_to_path(path, WriteOptions::new())
+        .map_err(|error| error.to_string())?;
+    read_track(path, artist_separator, ArtworkMode::None).map_err(|error| error.to_string())
+}
+
 pub(crate) fn read_cover_thumbnail(path: &Path) -> Option<String> {
     let tagged_file = lofty::read_from_path(path).ok()?;
     let tag = tagged_file
@@ -511,6 +530,34 @@ mod tests {
         assert_eq!(after.title, before.title);
         assert_eq!(after.artist, before.artist);
         assert_eq!(after.album, before.album);
+        let _ = std::fs::remove_file(target);
+    }
+
+    #[test]
+    fn lyrics_writer_changes_only_the_lyrics_field() {
+        let Ok(source) = std::env::var("LYRICO_REPLAY_GAIN_FIXTURE") else {
+            return;
+        };
+        let source = std::path::PathBuf::from(source);
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("flac");
+        let target = std::env::temp_dir().join(format!(
+            "lyrico-lyrics-write-{}.{extension}",
+            std::process::id()
+        ));
+        std::fs::copy(&source, &target).expect("fixture should copy");
+        let before = read_track(&target, "/", ArtworkMode::None).expect("fixture should read");
+        let lyrics = "[00:01.000]歌词格式化测试".to_string();
+        let after = write_lyrics_tag(&target, "/", lyrics.clone())
+            .expect("lyrics should write and read back");
+        assert_eq!(after.lyrics, lyrics);
+        assert_eq!(after.title, before.title);
+        assert_eq!(after.artist, before.artist);
+        assert_eq!(after.album, before.album);
+        assert_eq!(after.replay_gain_track_gain, before.replay_gain_track_gain);
+        assert_eq!(after.replay_gain_track_peak, before.replay_gain_track_peak);
         let _ = std::fs::remove_file(target);
     }
 }

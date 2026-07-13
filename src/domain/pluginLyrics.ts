@@ -1,4 +1,6 @@
 import { DOMParser, type Element as XmlElement, type Node as XmlNode } from "@xmldom/xmldom";
+import OpenCCS2T from "opencc-js/cn2t";
+import OpenCCT2S from "opencc-js/t2cn";
 
 export type LyricFormat = "plainLrc" | "verbatimLrc" | "enhancedLrc" | "ttml";
 
@@ -12,7 +14,9 @@ interface StructuredLyrics {
   romanization?: CompactLine[] | null;
 }
 
-type LyricsTrackType = "original" | "translation" | "romanization" | "background";
+export type LyricsTrackType = "original" | "translation" | "romanization" | "background";
+export type LyricLineTrack = Exclude<LyricsTrackType, "background">;
+export type LyricsConversionMode = "none" | "traditionalToSimplified" | "simplifiedToTraditional";
 
 type LyricsWord = {
   startMs?: number;
@@ -56,13 +60,39 @@ export type PluginLyricsOptions = {
   showTranslation?: boolean;
   showRomanization?: boolean;
   onlyTranslationIfAvailable?: boolean;
+  lineOrder?: LyricLineTrack[];
+  normalizeWhitespace?: boolean;
+  removeEmptyLines?: boolean;
+  removeTagLineKeywords?: string[];
+  offsetMs?: number;
+  conversionMode?: LyricsConversionMode;
+  forceRewrite?: boolean;
 };
+
+const DEFAULT_LINE_ORDER: LyricLineTrack[] = ["original", "romanization", "translation"];
 
 const DEFAULT_OPTIONS: Required<PluginLyricsOptions> = {
   showTranslation: true,
   showRomanization: true,
   onlyTranslationIfAvailable: false,
+  lineOrder: DEFAULT_LINE_ORDER,
+  normalizeWhitespace: false,
+  removeEmptyLines: false,
+  removeTagLineKeywords: [],
+  offsetMs: 0,
+  conversionMode: "none",
+  forceRewrite: false,
 };
+
+export type LyricsPipelineResult = {
+  text: string;
+  warnings: string[];
+  sourceFormat?: LyricFormat;
+  targetFormat: LyricFormat;
+};
+
+const toSimplified = OpenCCT2S.Converter({ from: "t", to: "cn" });
+const toTraditional = OpenCCS2T.Converter({ from: "cn", to: "tw" });
 
 export function preferredPluginLyricFormat(result: unknown): LyricFormat | undefined {
   if (!isRecord(result)) return undefined;
@@ -75,8 +105,21 @@ export function renderPluginLyrics(
   format: LyricFormat,
   options: PluginLyricsOptions = DEFAULT_OPTIONS,
 ): string {
-  if (!isRecord(result)) return "";
-  const normalizedOptions = { ...DEFAULT_OPTIONS, ...options };
+  return processPluginLyrics(result, format, options).text;
+}
+
+export function processPluginLyrics(
+  result: unknown,
+  format: LyricFormat,
+  options: PluginLyricsOptions = DEFAULT_OPTIONS,
+): LyricsPipelineResult {
+  if (!isRecord(result)) return { text: "", warnings: [], targetFormat: format };
+  const normalizedOptions = {
+    ...DEFAULT_OPTIONS,
+    ...options,
+    lineOrder: options.lineOrder ?? DEFAULT_LINE_ORDER,
+    removeTagLineKeywords: options.removeTagLineKeywords ?? [],
+  };
   const targetRaw = result[RAW_KEYS[format]];
 
   // A true no-op must retain provider-specific TTML extensions and formatting.
@@ -85,18 +128,65 @@ export function renderPluginLyrics(
     targetRaw.trim() &&
     normalizedOptions.showTranslation &&
     normalizedOptions.showRomanization &&
-    !normalizedOptions.onlyTranslationIfAvailable
+    !normalizedOptions.onlyTranslationIfAvailable &&
+    !hasDocumentTransforms(normalizedOptions)
   ) {
-    return targetRaw;
+    return { text: targetRaw, warnings: [], sourceFormat: format, targetFormat: format };
   }
 
   const document = isStructured(result)
     ? documentFromStructured(result)
     : parseBestRawDocument(result, format, normalizedOptions);
-  if (!document) return "";
+  if (!document) return { text: "", warnings: [], targetFormat: format };
 
   const processed = processDocument(document, normalizedOptions);
-  return format === "ttml" ? writeTtml(processed) : writeLrc(processed, format);
+  return {
+    text: format === "ttml" ? writeTtml(processed) : writeLrc(processed, format, normalizedOptions.lineOrder),
+    warnings: collectConversionWarnings(result, document.sourceFormat, format),
+    sourceFormat: document.sourceFormat,
+    targetFormat: format,
+  };
+}
+
+export function processLyricsText(
+  raw: string,
+  options: PluginLyricsOptions & { sourceFormat?: LyricFormat; targetFormat?: LyricFormat } = {},
+): LyricsPipelineResult {
+  if (!raw.trim()) {
+    const targetFormat = options.targetFormat ?? options.sourceFormat ?? "plainLrc";
+    return { text: raw, warnings: [], sourceFormat: options.sourceFormat, targetFormat };
+  }
+  const sourceFormat = options.sourceFormat ?? detectLyricFormat(raw);
+  const targetFormat = options.targetFormat ?? sourceFormat;
+  const processed = processPluginLyrics({ [RAW_KEYS[sourceFormat]]: raw }, targetFormat, options);
+  if (processed.text || sourceFormat === "ttml" || !options.removeEmptyLines) return processed;
+  return {
+    ...processed,
+    text: raw.split(/\r?\n/).filter((line) => line.trim()).join("\n"),
+  };
+}
+
+export function detectLyricFormat(raw: string): LyricFormat {
+  if (/<(?:\w+:)?tt(?:\s|>)|<(?:\w+:)?p\b[^>]*(?:begin|end)=/i.test(raw)) return "ttml";
+  if (/<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>/.test(raw)) return "enhancedLrc";
+  if (/^\s*(?:\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\].*){2,}/m.test(raw)) return "verbatimLrc";
+  return "plainLrc";
+}
+
+export function extractPlainLyricsText(raw: string): string {
+  if (!raw.trim()) return "";
+  const format = detectLyricFormat(raw);
+  const document = format === "ttml" ? parseTtml(raw) : parseLrc(raw, format);
+  const original = document.tracks.find((track) => track.type === "original")?.lines ?? [];
+  if (original.length) return original.map((line) => line.text || line.words.map((word) => word.text).join("")).filter(Boolean).join("\n");
+  return raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).join("\n");
+}
+
+function hasDocumentTransforms(options: Required<PluginLyricsOptions>) {
+  return options.normalizeWhitespace || options.removeEmptyLines || options.removeTagLineKeywords.length > 0 ||
+    options.offsetMs !== 0 || options.conversionMode !== "none" ||
+    options.forceRewrite ||
+    normalizedLineOrder(options.lineOrder).join("|") !== DEFAULT_LINE_ORDER.join("|");
 }
 
 function parseBestRawDocument(
@@ -197,11 +287,10 @@ function parsePlainLrcLine(line: string): LyricsLine[] {
 
 function parseEnhancedLrcLine(line: string): LyricsLine | undefined {
   const lineStamp = line.match(/^\[(\d{1,3}:\d{2}(?:[.:]\d{1,3})?)\]/);
-  if (!lineStamp) return undefined;
-  const startMs = parseLrcTime(lineStamp[1]);
-  if (startMs == null) return undefined;
-  const content = line.slice(lineStamp[0].length);
+  const content = lineStamp ? line.slice(lineStamp[0].length) : line;
   const stampMatches = [...content.matchAll(/<(\d{1,3}:\d{2}(?:[.:]\d{1,3})?)>/g)];
+  const startMs = lineStamp ? parseLrcTime(lineStamp[1]) : parseLrcTime(stampMatches[0]?.[1] ?? "");
+  if (startMs == null) return undefined;
   if (!stampMatches.length) return { startMs, endMs: startMs + 2000, text: content, words: [] };
   return timedLineFromStamps(content, stampMatches, startMs);
 }
@@ -403,7 +492,8 @@ function parseTimedWords(element: XmlElement, fallbackEnd?: number): LyricsWord[
 }
 
 function processDocument(document: LyricsDocument, options: Required<PluginLyricsOptions>): LyricsDocument {
-  let tracks = document.tracks.filter((track) => {
+  let next = transformDocumentText(document, options);
+  let tracks = next.tracks.filter((track) => {
     if (!options.showTranslation && track.type === "translation") return false;
     if (!options.showRomanization && track.type === "romanization") return false;
     return true;
@@ -422,21 +512,31 @@ function processDocument(document: LyricsDocument, options: Required<PluginLyric
       tracks = tracks.filter((track) => track.type !== "translation" && track.type !== "background");
     }
   }
-  return { ...document, tracks };
+  next = { ...next, tracks };
+  if (options.removeTagLineKeywords.length) next = removeMatchingLines(next, options.removeTagLineKeywords, true);
+  if (options.removeEmptyLines) next = removeEmptyLines(next);
+  if (options.offsetMs) next = offsetDocument(next, options.offsetMs);
+  return next;
 }
 
-function writeLrc(document: LyricsDocument, format: Exclude<LyricFormat, "ttml">) {
+function writeLrc(document: LyricsDocument, format: Exclude<LyricFormat, "ttml">, lineOrder: LyricLineTrack[] = DEFAULT_LINE_ORDER) {
   const tags = Object.entries(document.metadata).map(([key, value]) => `[${key}:${value}]`);
   const original = document.tracks.find((track) => track.type === "original")?.lines ?? [];
   const translations = linkedLineLookup(document.tracks, "translation");
   const romanizations = linkedLineLookup(document.tracks, "romanization");
   const output: string[] = [];
   for (const line of original) {
-    output.push(writeOriginalLrcLine(line, format));
-    const romanization = findLinkedLine(romanizations, line);
-    if (romanization?.text) output.push(`[${lrcTime(line.startMs ?? 0)}]${romanization.text}`);
-    const translation = findLinkedLine(translations, line);
-    if (translation?.text) output.push(`[${lrcTime(line.startMs ?? 0)}]${translation.text}`);
+    for (const type of normalizedLineOrder(lineOrder)) {
+      if (type === "original") output.push(writeOriginalLrcLine(line, format));
+      if (type === "romanization") {
+        const romanization = findLinkedLine(romanizations, line);
+        if (romanization?.text) output.push(`[${lrcTime(line.startMs ?? 0)}]${romanization.text}`);
+      }
+      if (type === "translation") {
+        const translation = findLinkedLine(translations, line);
+        if (translation?.text) output.push(`[${lrcTime(line.startMs ?? 0)}]${translation.text}`);
+      }
+    }
   }
   return [...tags, ...(tags.length && output.length ? [""] : []), ...output].join("\n");
 }
@@ -515,7 +615,7 @@ function writeTtml(document: LyricsDocument) {
     return `      <p begin="${ttmlTime(start)}" end="${ttmlTime(end)}" itunes:key="${escapeXml(lineKeys[index])}"${agent}>${originalContent}${romanizationContent}${backgroundContent}</p>`;
   });
   const language = document.language ? ` xml:lang="${escapeXml(document.language)}"` : "";
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xmlns:lyrico="https://lyrico.app/ns/lyrics"${language}>\n${head}  <body>\n    <div>\n${lines.join("\n")}\n    </div>\n  </body>\n</tt>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" ${language}>\n${head}  <body>\n    <div>\n${lines.join("\n")}\n    </div>\n  </body>\n</tt>`;
 }
 
 function linkedLineLookup(tracks: LyricsTrack[], type: LyricsTrackType) {
@@ -548,6 +648,90 @@ function findLinkedLines(lookup: ReturnType<typeof linkedLineLookup>, line: Lyri
     (line.linkKey && candidate.linkKey === line.linkKey) ||
     (line.startMs != null && candidate.startMs === line.startMs),
   );
+}
+
+function normalizedLineOrder(order: LyricLineTrack[]) {
+  return [...order, ...DEFAULT_LINE_ORDER].filter((item, index, all) => all.indexOf(item) === index && DEFAULT_LINE_ORDER.includes(item));
+}
+
+function transformDocumentText(document: LyricsDocument, options: Required<PluginLyricsOptions>): LyricsDocument {
+  let transform = (value: string) => value;
+  if (options.conversionMode === "traditionalToSimplified") transform = toSimplified;
+  if (options.conversionMode === "simplifiedToTraditional") transform = toTraditional;
+  const normalize = (value: string) => options.normalizeWhitespace ? transform(value).replace(/[ \t\u00a0]+/g, " ") : transform(value);
+  if (options.conversionMode === "none" && !options.normalizeWhitespace) return document;
+  return {
+    ...document,
+    metadata: Object.fromEntries(Object.entries(document.metadata).map(([key, value]) => [key, normalize(value)])),
+    tracks: document.tracks.map((track) => ({
+      ...track,
+      lines: track.lines.map((line) => ({
+        ...line,
+        text: normalize(line.text),
+        words: line.words.map((word) => ({ ...word, text: normalize(word.text) })),
+      })),
+    })),
+  };
+}
+
+function removeEmptyLines(document: LyricsDocument) {
+  return removeMatchingLines(document, [], false);
+}
+
+function removeMatchingLines(document: LyricsDocument, keywords: string[], removeMetadata: boolean): LyricsDocument {
+  const removedKeys = new Set<string>();
+  const removedStarts = new Set<number>();
+  const matches = (line: LyricsLine) => keywords.length
+    ? keywords.some((keyword) => (line.text || line.words.map((word) => word.text).join("")).toLocaleLowerCase().includes(keyword.toLocaleLowerCase()))
+    : isBlankOrPlaceholder(line.text || line.words.map((word) => word.text).join(""));
+  const tracks = document.tracks.map((track) => {
+    const lines = track.lines.filter((line) => {
+      const remove = matches(line);
+      if (remove && track.type === "original") {
+        if (line.linkKey) removedKeys.add(line.linkKey);
+        if (line.startMs != null) removedStarts.add(line.startMs);
+      }
+      return !remove;
+    });
+    return { ...track, lines };
+  }).map((track) => track.type === "original" ? track : ({
+    ...track,
+    lines: track.lines.filter((line) => !(line.linkKey && removedKeys.has(line.linkKey)) && !(line.startMs != null && removedStarts.has(line.startMs))),
+  }));
+  const metadata = !removeMetadata ? document.metadata : Object.fromEntries(Object.entries(document.metadata).filter(([key, value]) => {
+    const tag = `[${key}:${value}]`.toLocaleLowerCase();
+    return !keywords.some((keyword) => tag.includes(keyword.toLocaleLowerCase()));
+  }));
+  return { ...document, metadata, tracks };
+}
+
+function isBlankOrPlaceholder(value: string) {
+  return !value.trim() || /^[\s/\\|｜·・.。…_-]*$/u.test(value.trim());
+}
+
+function offsetDocument(document: LyricsDocument, offsetMs: number): LyricsDocument {
+  const shift = (value?: number) => value == null ? undefined : Math.max(0, value + offsetMs);
+  return {
+    ...document,
+    tracks: document.tracks.map((track) => ({
+      ...track,
+      lines: track.lines.map((line) => ({
+        ...line,
+        startMs: shift(line.startMs),
+        endMs: shift(line.endMs),
+        words: line.words.map((word) => ({ ...word, startMs: shift(word.startMs), endMs: shift(word.endMs) })),
+      })),
+    })),
+  };
+}
+
+function collectConversionWarnings(result: Record<string, unknown>, sourceFormat: LyricFormat | undefined, targetFormat: LyricFormat) {
+  if (sourceFormat !== "ttml" || targetFormat === "ttml") return [];
+  const raw = result.rawTtml;
+  if (typeof raw !== "string") return [];
+  const knownNamespaces = new Set(["http://www.w3.org/ns/ttml", "http://www.w3.org/ns/ttml#metadata", "http://music.apple.com/lyric-ttml-internal"]);
+  const unknownNamespaces = [...raw.matchAll(/xmlns(?::[\w-]+)?=["']([^"']+)["']/g)].map((match) => match[1]).filter((value) => !knownNamespaces.has(value));
+  return [...new Set(unknownNamespaces)].map((namespace) => `TTML extension cannot be represented in ${targetFormat}: ${namespace}`);
 }
 
 function parseLrcTime(value: string) {

@@ -107,16 +107,16 @@ export async function startBatchTask(taskId: string) {
   return invoke<BatchTask>("start_batch_task", { taskId });
 }
 
-export async function updateBatchTaskItem(taskId: string, itemId: string, status: string, progress: number, errorMessage?: string) {
-  return invoke<BatchTask>("update_batch_task_item", { taskId, itemId, status, progress, errorMessage });
+export async function cancelBatchTask(taskId: string) {
+  return invoke<BatchTask>("cancel_batch_task", { taskId });
 }
 
-export async function finishBatchTask(taskId: string, status: "succeeded" | "failed" | "cancelled", errorMessage?: string) {
-  return invoke<BatchTask>("finish_batch_task", { taskId, status, errorMessage });
+export async function cancelBatchTaskItem(taskId: string, itemId: string) {
+  return invoke<BatchTask>("cancel_batch_task_item", { taskId, itemId });
 }
 
-export async function writeTrackReplayGain(path: string, trackGain: string, trackPeak: string) {
-  return invoke<AudioTrack>("write_track_replay_gain", { path, trackGain, trackPeak });
+export async function retryFailedBatchItems(taskId: string, itemIds?: string[]) {
+  return invoke<BatchTask>("retry_failed_batch_items", { taskId, itemIds });
 }
 
 export async function loadSourcePlugins() {

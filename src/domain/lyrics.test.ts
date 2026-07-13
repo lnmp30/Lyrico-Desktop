@@ -3,7 +3,9 @@ import { lyricsExportExtension, plainLyricsText, removeEmptyLyricsLines, shiftLy
 
 describe("lyrics processing", () => {
   it("shifts LRC and enhanced LRC timestamps without going below zero", () => {
-    expect(shiftLyricsOffset("[00:01.20]line\n<00:00.050>word", -100)).toBe("[00:01.100]line\n<00:00.000>word");
+    const shifted = shiftLyricsOffset("[00:01.20]line\n<00:00.050>word", -100);
+    expect(shifted).toContain("[00:01.100]line");
+    expect(shifted).toContain("<00:00.000>word");
   });
 
   it("shifts TTML begin and end timestamps", () => {

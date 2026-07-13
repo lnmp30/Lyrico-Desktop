@@ -17,24 +17,19 @@ import {
   saveAudioTags,
   saveArtistSplitConfig,
   analyzeReplayGain,
+  cancelBatchTask,
   cancelReplayGain,
   scanFolder,
   upsertLibraryFolder,
   writeTextFile,
   writeImageFile,
-  createBatchTask,
-  finishBatchTask,
-  loadBatchTaskItems,
   loadSourcePlugins,
   loadDesktopSettings,
   installSourcePluginArchive,
   saveSourcePluginSettings,
   saveDesktopSettings,
   setSourcePluginEnabled,
-  startBatchTask,
   uninstallSourcePlugin,
-  updateBatchTaskItem,
-  writeTrackReplayGain,
 } from "../backend/audioApi";
 import { Shell } from "../components/Shell";
 import { AppContextMenu } from "../components/AppContextMenu";
@@ -63,6 +58,7 @@ import "../App.css";
 const defaultDesktopSettings: DesktopSettings = {
   searchPageSize: 10,
   lyricFormat: "verbatimLrc",
+  lyricsConversionMode: "none",
   showTranslation: true,
   showRomanization: true,
   onlyTranslationIfAvailable: false,
@@ -122,7 +118,6 @@ function LyricoDesktop() {
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(defaultDesktopSettings);
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(getLanguagePreference);
   const [scanProgress, setScanProgress] = useState<ScanProgress>();
-  const [activeBatchTask, setActiveBatchTask] = useState<BatchTask>();
   const [form] = Form.useForm<TagForm>();
   const detailRequest = useRef(0);
   const artistSplitSaveQueue = useRef<Promise<void>>(Promise.resolve());
@@ -166,6 +161,25 @@ function LyricoDesktop() {
         setPlugins([]);
         setDesktopSettings(defaultDesktopSettings);
       });
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    void listen<BatchTask>("batch-task-updated", ({ payload }) => {
+      if (!disposed && ["succeeded", "failed", "cancelled"].includes(payload.status)) {
+        void loadLibraryTracks().then((nextTracks) => {
+          if (!disposed) setTracks(nextTracks);
+        });
+      }
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -339,77 +353,9 @@ function LyricoDesktop() {
   async function cancelActiveReplayGain() {
     const progress = getReplayGainProgress();
     if (progress?.status !== "running") return;
-    await cancelReplayGain(progress.jobId).catch((error) => message.error(String(error)));
-  }
-
-  async function runBatchReplayGain() {
-    if (selectedTracks.length === 0 || activeBatchTask?.status === "running") return;
-    let task: BatchTask | undefined;
-    try {
-      task = await createBatchTask("replayGain", selectedTracks.map((track) => track.path));
-      task = await startBatchTask(task.taskId);
-      setActiveBatchTask(task);
-      const items = await loadBatchTaskItems(task.taskId);
-      const tracksByPath = new Map(selectedTracks.map((track) => [track.path, track]));
-
-      for (const item of items) {
-        const track = tracksByPath.get(item.songPath);
-        if (!track) {
-          task = await updateBatchTaskItem(task.taskId, item.itemId, "skipped", 1, "Song is no longer selected");
-          setActiveBatchTask(task);
-          continue;
-        }
-        const hasExistingReplayGain = Boolean(
-          track.replayGainTrackGain ||
-          track.replayGainTrackPeak ||
-          track.replayGainAlbumGain ||
-          track.replayGainAlbumPeak ||
-          track.replayGainReferenceLoudness,
-        );
-        if (hasExistingReplayGain) {
-          task = await updateBatchTaskItem(task.taskId, item.itemId, "skipped", 1, "ReplayGain already exists");
-          setActiveBatchTask(task);
-          continue;
-        }
-
-        task = await updateBatchTaskItem(task.taskId, item.itemId, "running", 0);
-        setActiveBatchTask(task);
-        const jobId = `${task.taskId}:${item.itemId}`;
-        publishReplayGainProgress({ jobId, path: item.songPath, percent: 0, status: "running" });
-        try {
-          const analysis = await analyzeReplayGain(item.songPath, jobId);
-          const saved = await writeTrackReplayGain(item.songPath, analysis.trackGain, analysis.trackPeak);
-          replaceTrack(saved);
-          task = await updateBatchTaskItem(task.taskId, item.itemId, "succeeded", 1);
-          setActiveBatchTask(task);
-        } catch (error) {
-          const errorText = String(error);
-          if (errorText.toLocaleLowerCase().includes("cancelled")) {
-            await updateBatchTaskItem(task.taskId, item.itemId, "cancelled", 0, errorText);
-            task = await finishBatchTask(task.taskId, "cancelled", errorText);
-            setActiveBatchTask(task);
-            message.info(t("tasks.batchCancelled"));
-            return;
-          }
-          task = await updateBatchTaskItem(task.taskId, item.itemId, "failed", 1, errorText);
-          setActiveBatchTask(task);
-        }
-      }
-
-      task = await finishBatchTask(task.taskId, "succeeded");
-      setActiveBatchTask(task);
-      message.success(t("tasks.batchFinished", {
-        success: task.successCount,
-        skipped: task.skippedCount,
-        failed: task.failureCount,
-      }));
-    } catch (error) {
-      if (task?.status === "running") {
-        task = await finishBatchTask(task.taskId, "failed", String(error)).catch(() => task);
-        setActiveBatchTask(task);
-      }
-      message.error(String(error));
-    }
+    const batchTaskId = progress.jobId.includes(":") ? progress.jobId.split(":", 1)[0] : undefined;
+    const request = batchTaskId?.startsWith("batch-") ? cancelBatchTask(batchTaskId) : cancelReplayGain(progress.jobId);
+    await request.catch((error) => message.error(String(error)));
   }
 
   async function chooseLocalCover() {
@@ -713,9 +659,8 @@ function LyricoDesktop() {
             tracks={tracks}
             plugins={plugins}
             selectedPaths={selectedPaths}
-            activeTask={activeBatchTask}
-            onRunReplayGain={runBatchReplayGain}
-            onCancelReplayGain={cancelActiveReplayGain}
+            settings={desktopSettings}
+            artistSeparator={artistSplitConfig.artistSeparator}
           />
         );
       case "settings":
