@@ -37,4 +37,15 @@ describe("track cover cache", () => {
     expect(readCachedTrackCover("first")).toBe("first-cover");
     expect(readCachedTrackCover("second")).toBe("second-cover");
   });
+
+  it("coalesces cover requests made in the same render frame", async () => {
+    mockedLoadTrackCovers.mockImplementation(async (paths) =>
+      paths.map((path) => ({ path, coverDataUrl: `${path}-cover` })),
+    );
+
+    await Promise.all([preloadTrackCovers(["first"], [0]), preloadTrackCovers(["second"], [0])]);
+
+    expect(mockedLoadTrackCovers).toHaveBeenCalledTimes(1);
+    expect(mockedLoadTrackCovers).toHaveBeenCalledWith(["first", "second"]);
+  });
 });

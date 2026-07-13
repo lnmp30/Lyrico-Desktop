@@ -12,6 +12,11 @@ pub(crate) struct AudioTrack {
     pub(crate) album: String,
     pub(crate) album_artist: String,
     pub(crate) genre: String,
+    pub(crate) language: String,
+    pub(crate) composer: String,
+    pub(crate) lyricist: String,
+    pub(crate) copyright: String,
+    pub(crate) rating: Option<u8>,
     pub(crate) comment: String,
     pub(crate) lyrics: String,
     pub(crate) track_number: Option<u32>,
@@ -29,6 +34,7 @@ pub(crate) struct AudioTrack {
     pub(crate) replay_gain_track_peak: String,
     pub(crate) replay_gain_album_gain: String,
     pub(crate) replay_gain_album_peak: String,
+    pub(crate) replay_gain_reference_loudness: String,
 }
 
 impl AudioTrack {
@@ -45,6 +51,29 @@ impl AudioTrack {
 pub(crate) struct TrackCover {
     pub(crate) path: String,
     pub(crate) cover_data_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayGainAnalysis {
+    pub(crate) job_id: String,
+    pub(crate) path: String,
+    pub(crate) loudness_lufs: f64,
+    pub(crate) sample_count: u64,
+    pub(crate) peak: f64,
+    pub(crate) track_gain: String,
+    pub(crate) track_peak: String,
+    pub(crate) reference_loudness: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayGainProgress {
+    pub(crate) job_id: String,
+    pub(crate) path: String,
+    pub(crate) percent: u8,
+    pub(crate) status: String,
+    pub(crate) message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +96,40 @@ pub(crate) struct StorageInfo {
     pub(crate) database_path: String,
     pub(crate) config_path: String,
     pub(crate) location: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BatchTask {
+    pub(crate) task_id: String,
+    pub(crate) task_type: String,
+    pub(crate) status: String,
+    pub(crate) total: u32,
+    pub(crate) current: u32,
+    pub(crate) success_count: u32,
+    pub(crate) failure_count: u32,
+    pub(crate) skipped_count: u32,
+    pub(crate) config_json: Option<String>,
+    pub(crate) started_at: Option<String>,
+    pub(crate) finished_at: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BatchTaskItem {
+    pub(crate) item_id: String,
+    pub(crate) task_id: String,
+    pub(crate) song_path: String,
+    pub(crate) file_name: String,
+    pub(crate) status: String,
+    pub(crate) progress: Option<f64>,
+    pub(crate) result_json: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,12 +195,24 @@ pub(crate) struct TagUpdate {
     pub(crate) artist: String,
     pub(crate) album: String,
     pub(crate) album_artist: String,
-    pub(crate) genre: String,
+    pub(crate) genre: Vec<String>,
+    pub(crate) language: String,
+    pub(crate) composer: String,
+    pub(crate) lyricist: String,
+    pub(crate) copyright: String,
+    pub(crate) rating: Option<u8>,
     pub(crate) comment: String,
     pub(crate) lyrics: String,
     pub(crate) track_number: Option<u32>,
     pub(crate) disc_number: Option<u32>,
     pub(crate) year: String,
+    pub(crate) replay_gain_track_gain: String,
+    pub(crate) replay_gain_track_peak: String,
+    pub(crate) replay_gain_album_gain: String,
+    pub(crate) replay_gain_album_peak: String,
+    pub(crate) replay_gain_reference_loudness: String,
+    pub(crate) cover_data_url: Option<String>,
+    pub(crate) remove_cover: bool,
 }
 
 fn default_true() -> bool {
@@ -146,4 +221,35 @@ fn default_true() -> bool {
 
 fn default_artist_separator() -> String {
     "/".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TagUpdate;
+    use serde_json::json;
+
+    fn complete_update() -> serde_json::Value {
+        json!({
+            "path": "song.flac", "title": "", "artist": "", "album": "",
+            "albumArtist": "", "genre": [], "language": "", "composer": "",
+            "lyricist": "", "copyright": "", "rating": null, "comment": "",
+            "lyrics": "", "trackNumber": null, "discNumber": null, "year": "",
+            "replayGainTrackGain": "", "replayGainTrackPeak": "",
+            "replayGainAlbumGain": "", "replayGainAlbumPeak": "",
+            "replayGainReferenceLoudness": "", "coverDataUrl": null,
+            "removeCover": false
+        })
+    }
+
+    #[test]
+    fn tag_update_accepts_explicit_empty_fields() {
+        assert!(serde_json::from_value::<TagUpdate>(complete_update()).is_ok());
+    }
+
+    #[test]
+    fn tag_update_rejects_missing_required_fields_instead_of_guessing() {
+        let mut value = complete_update();
+        value.as_object_mut().unwrap().remove("composer");
+        assert!(serde_json::from_value::<TagUpdate>(value).is_err());
+    }
 }

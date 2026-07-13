@@ -1,147 +1,103 @@
-import { ApiOutlined, DatabaseOutlined, FolderOpenOutlined, GlobalOutlined, InfoCircleOutlined, ScissorOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Descriptions, Form, Select, Space, Tabs, Tag, Typography } from "antd";
+import { ApiOutlined, GlobalOutlined, ScissorOutlined, SoundOutlined } from "@ant-design/icons";
+import { Card, InputNumber, Select, Switch, Tabs, Typography } from "antd";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { useEffect, useState, type ReactNode } from "react";
-import type { ArtistSplitConfig, SourcePlugin, StorageInfo, ViewKey } from "../app/types";
+import type { ArtistSplitConfig, DesktopSettings } from "../app/types";
 import type { LanguagePreference } from "../i18n";
 import { ArtistSplitSettings } from "../components/ArtistSplitSettings";
-import { getStorageInfo } from "../backend/audioApi";
 
 const { Title, Text } = Typography;
 
 export function SettingsPage({
   languagePreference,
-  folderCount,
-  trackCount,
-  plugins,
   artistSplitConfig,
+  settings,
   onChangeLanguage,
   onChangeArtistSplitConfig,
-  onNavigate,
+  onChangeSettings,
 }: {
   languagePreference: LanguagePreference;
-  folderCount: number;
-  trackCount: number;
-  plugins: SourcePlugin[];
   artistSplitConfig: ArtistSplitConfig;
+  settings: DesktopSettings;
   onChangeLanguage: (language: LanguagePreference) => void;
   onChangeArtistSplitConfig: (config: ArtistSplitConfig) => void;
-  onNavigate: (view: ViewKey) => void;
+  onChangeSettings: (settings: DesktopSettings) => void;
 }) {
   const { t } = useTranslation();
-  const enabledPlugins = plugins.filter((plugin) => plugin.enabled);
-  const [storageInfo, setStorageInfo] = useState<StorageInfo>();
-
-  useEffect(() => {
-    void getStorageInfo().then(setStorageInfo).catch(() => setStorageInfo(undefined));
-  }, []);
+  const update = <K extends keyof DesktopSettings>(key: K, value: DesktopSettings[K]) => onChangeSettings({ ...settings, [key]: value });
 
   return (
     <div className="workspace page-stack settings-view">
       <div>
         <Title level={2}>{t("settings.title")}</Title>
-        <Text type="secondary">{t("settings.description")}</Text>
+        <Text type="secondary">{t("settings.descriptionEffective")}</Text>
       </div>
 
-      <Card className="settings-card" styles={{ body: { padding: 0 } }}>
+      <Card className="content-card settings-card" styles={{ body: { padding: 0 } }}>
         <Tabs
           className="settings-tabs"
-          tabPlacement="start"
+          tabPosition="left"
           items={[
             {
-              key: "general",
-              label: <Space><GlobalOutlined />{t("settings.general")}</Space>,
+              key: "interface",
+              label: t("settings.interface"),
+              icon: <GlobalOutlined />,
               children: (
                 <SettingsSection title={t("settings.interface")}>
-                  <Form layout="vertical" className="settings-form">
-                    <Form.Item label={t("settings.language")} extra={t("settings.languageHint")}>
-                      <Select<LanguagePreference>
-                        value={languagePreference}
-                        onChange={onChangeLanguage}
-                        options={[
-                          { value: "system", label: t("settings.systemLanguage") },
-                          { value: "en-US", label: t("settings.english") },
-                          { value: "zh-CN", label: t("settings.chinese") },
-                        ]}
-                      />
-                    </Form.Item>
-                  </Form>
+                  <SettingRow title={t("settings.language")} description={t("settings.languageHint")}>
+                    <Select<LanguagePreference>
+                      value={languagePreference}
+                      onChange={onChangeLanguage}
+                      options={[
+                        { value: "system", label: t("settings.systemLanguage") },
+                        { value: "en-US", label: t("settings.english") },
+                        { value: "zh-CN", label: t("settings.chinese") },
+                      ]}
+                    />
+                  </SettingRow>
                 </SettingsSection>
               ),
             },
             {
-              key: "metadata",
-              label: <Space><ScissorOutlined />{t("settings.metadata")}</Space>,
+              key: "online",
+              label: t("settings.onlineSearch"),
+              icon: <ApiOutlined />,
               children: (
-                <SettingsSection title={t("artistSplit.title")}>
-                  <ArtistSplitSettings config={artistSplitConfig} onChange={onChangeArtistSplitConfig} />
+                <SettingsSection title={t("settings.onlineSearch")}>
+                  <SettingRow title={t("settings.searchPageSize")} description={t("settings.searchPageSizeHint")}>
+                    <InputNumber min={5} max={50} precision={0} value={settings.searchPageSize} onChange={(value) => update("searchPageSize", value ?? 10)} />
+                  </SettingRow>
+                </SettingsSection>
+              ),
+            },
+            {
+              key: "lyrics",
+              label: t("settings.lyricsSettings"),
+              icon: <SoundOutlined />,
+              children: (
+                <SettingsSection title={t("settings.lyricsSettings")}>
+                  <SettingRow title={t("settings.defaultLyricFormat")} description={t("settings.defaultLyricFormatHint")}>
+                    <Select value={settings.lyricFormat} onChange={(value) => update("lyricFormat", value)} options={[
+                      { value: "plainLrc", label: t("lyrics.formats.plainLrc") },
+                      { value: "verbatimLrc", label: t("lyrics.formats.verbatimLrc") },
+                      { value: "enhancedLrc", label: t("lyrics.formats.enhancedLrc") },
+                      { value: "ttml", label: t("lyrics.formats.ttml") },
+                    ]} />
+                  </SettingRow>
+                  <SettingRow title={t("settings.includeTranslation")} description={t("settings.includeTranslationHint")}><Switch checked={settings.showTranslation} onChange={(value) => onChangeSettings({ ...settings, showTranslation: value, onlyTranslationIfAvailable: value ? settings.onlyTranslationIfAvailable : false })} /></SettingRow>
+                  <SettingRow title={t("settings.onlyTranslation")} description={t("settings.onlyTranslationHint")}><Switch disabled={!settings.showTranslation} checked={settings.onlyTranslationIfAvailable} onChange={(value) => update("onlyTranslationIfAvailable", value)} /></SettingRow>
+                  <SettingRow title={t("settings.includeRomanization")} description={t("settings.includeRomanizationHint")}><Switch checked={settings.showRomanization} onChange={(value) => update("showRomanization", value)} /></SettingRow>
+                  <SettingRow title={t("settings.removeEmptyLyricLines")} description={t("settings.removeEmptyLyricLinesHint")}><Switch checked={settings.removeEmptyLyricLines} onChange={(value) => update("removeEmptyLyricLines", value)} /></SettingRow>
                 </SettingsSection>
               ),
             },
             {
               key: "library",
-              label: <Space><DatabaseOutlined />{t("settings.library")}</Space>,
+              label: t("settings.library"),
+              icon: <ScissorOutlined />,
               children: (
-                <SettingsSection title={t("settings.librarySummary")}>
-                  <Alert
-                    showIcon
-                    type="info"
-                    title={t("settings.startupTitle")}
-                    description={t("settings.startupDescription")}
-                  />
-                  <Descriptions
-                    bordered
-                    column={1}
-                    items={[
-                      { key: "songs", label: t("common.songs"), children: t("common.songCount", { count: trackCount }) },
-                      { key: "folders", label: t("common.folders"), children: t("common.folderCount", { count: folderCount }) },
-                      {
-                        key: "persistence",
-                        label: t("settings.persistence"),
-                        children: storageInfo ? (
-                          <Space orientation="vertical" size={4}>
-                            <Tag color={storageInfo.location === "installation" ? "blue" : "gold"}>
-                              {t(`settings.storageLocation.${storageInfo.location}`)}
-                            </Tag>
-                            <Text copyable={{ text: storageInfo.databasePath }}>{storageInfo.databasePath}</Text>
-                          </Space>
-                        ) : t("settings.persistenceValue"),
-                      },
-                      { key: "artwork", label: t("settings.artwork"), children: t("settings.artworkValue") },
-                    ]}
-                  />
-                  <Button icon={<FolderOpenOutlined />} onClick={() => onNavigate("folders")}>{t("settings.manageFolders")}</Button>
-                </SettingsSection>
-              ),
-            },
-            {
-              key: "sources",
-              label: <Space><ApiOutlined />{t("settings.integrations")}</Space>,
-              children: (
-                <SettingsSection title={t("settings.sourceSummary")}>
-                  <Space wrap>
-                    {enabledPlugins.length
-                      ? enabledPlugins.map((plugin) => <Tag color="success" key={plugin.id}>{plugin.name}</Tag>)
-                      : <Text type="secondary">{t("settings.noSources")}</Text>}
-                  </Space>
-                  <Button icon={<ApiOutlined />} onClick={() => onNavigate("sources")}>{t("settings.manageSources")}</Button>
-                </SettingsSection>
-              ),
-            },
-            {
-              key: "about",
-              label: <Space><InfoCircleOutlined />{t("settings.about")}</Space>,
-              children: (
-                <SettingsSection title={t("settings.about")}>
-                  <Descriptions
-                    bordered
-                    column={1}
-                    items={[
-                      { key: "product", label: t("settings.product"), children: "Lyrico Desktop" },
-                      { key: "version", label: t("settings.version"), children: "0.1.0" },
-                      { key: "framework", label: t("settings.framework"), children: "Tauri 2 · React 19 · Ant Design 6" },
-                    ]}
-                  />
+                <SettingsSection title={t("artistSplit.title")}>
+                  <ArtistSplitSettings config={artistSplitConfig} onChange={onChangeArtistSplitConfig} />
                 </SettingsSection>
               ),
             },
@@ -153,10 +109,14 @@ export function SettingsPage({
 }
 
 function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
+  return <section className="settings-section"><Typography.Title level={4}>{title}</Typography.Title>{children}</section>;
+}
+
+function SettingRow({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return (
-    <section className="settings-section">
-      <Title level={4}>{title}</Title>
-      <Space orientation="vertical" size={20} className="full-width">{children}</Space>
-    </section>
+    <div className="setting-row">
+      <div className="setting-row-copy"><Text strong>{title}</Text>{description ? <Text type="secondary">{description}</Text> : null}</div>
+      <div className="setting-row-control">{children}</div>
+    </div>
   );
 }

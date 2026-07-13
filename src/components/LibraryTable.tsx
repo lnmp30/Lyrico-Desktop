@@ -1,10 +1,10 @@
-import { Space, Table, Tag, Tooltip, Typography, type TableColumnsType, type TableProps } from "antd";
-import { useEffect, useState } from "react";
+import { CheckSquareOutlined, CloudSyncOutlined, CloseOutlined } from "@ant-design/icons";
+import { Button, Flex, Space, Table, Tag, Tooltip, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack } from "../app/types";
-import { useTrackCovers } from "../hooks/useTrackCovers";
 import { formatDuration } from "../utils/format";
 import { TrackArtwork } from "./TrackArtwork";
+import { useResizableColumns, type BoundedColumn } from "../hooks/useResizableColumns";
 
 const { Text } = Typography;
 
@@ -16,8 +16,10 @@ export function LibraryTable({
   onSelectTrack,
   onOpenTrack,
   onChangeSelectedPaths,
-  pageSize = 20,
-  selectable = true,
+  selectionMode = false,
+  onChangeSelectionMode,
+  onOpenBatch,
+  showSelectionToolbar = true,
 }: {
   tracks: AudioTrack[];
   loading?: boolean;
@@ -26,30 +28,26 @@ export function LibraryTable({
   onSelectTrack: (path?: string) => void;
   onOpenTrack?: (track: AudioTrack) => void;
   onChangeSelectedPaths?: (paths: string[]) => void;
-  pageSize?: number;
-  selectable?: boolean;
+  selectionMode?: boolean;
+  onChangeSelectionMode?: (enabled: boolean) => void;
+  onOpenBatch?: () => void;
+  showSelectionToolbar?: boolean;
 }) {
   const { t } = useTranslation();
-  const [currentPage, setCurrentPage] = useState(1);
-  const [currentPageSize, setCurrentPageSize] = useState(pageSize);
-  const [coverPaths, setCoverPaths] = useState(() => pageCoverPaths(tracks, 1, pageSize));
-  const covers = useTrackCovers(coverPaths);
 
-  useEffect(() => {
-    setCurrentPage(1);
-    setCoverPaths(pageCoverPaths(tracks, 1, currentPageSize));
-  }, [tracks, currentPageSize]);
-
-  const columns: TableColumnsType<AudioTrack> = [
+  const baseColumns: BoundedColumn<AudioTrack>[] = [
     {
       title: t("table.song"),
       dataIndex: "title",
       key: "title",
+      width: 360,
+      minWidth: 220,
+      maxWidth: 720,
       sorter: (left, right) => left.title.localeCompare(right.title),
       render: (_, track) => (
         <Tooltip title={track.fileName} placement="topLeft">
           <Space size={12} className="song-cell">
-            <TrackArtwork track={{ coverDataUrl: track.coverDataUrl ?? covers.get(track.path) }} size={44} />
+            <TrackArtwork track={track} size={44} />
             <div className="track-title-cell">
               <Text strong ellipsis>
                 {track.title || track.fileName}
@@ -66,6 +64,8 @@ export function LibraryTable({
       title: t("table.album"),
       dataIndex: "album",
       width: 220,
+      minWidth: 140,
+      maxWidth: 480,
       responsive: ["lg"],
       sorter: (left, right) => left.album.localeCompare(right.album),
       render: (value: string) => value || <Text type="secondary">{t("common.unknownAlbum")}</Text>,
@@ -75,6 +75,8 @@ export function LibraryTable({
       dataIndex: "trackNumber",
       align: "right",
       width: 72,
+      minWidth: 60,
+      maxWidth: 120,
       responsive: ["lg"],
       render: (value?: number) => value ?? "—",
     },
@@ -83,6 +85,8 @@ export function LibraryTable({
       dataIndex: "durationSeconds",
       align: "right",
       width: 100,
+      minWidth: 80,
+      maxWidth: 160,
       render: (value: number) => formatDuration(value),
     },
     {
@@ -90,13 +94,16 @@ export function LibraryTable({
       dataIndex: "format",
       align: "center",
       width: 90,
+      minWidth: 72,
+      maxWidth: 140,
       responsive: ["xl"],
       render: (value: string) => <Tag>{value || "—"}</Tag>,
     },
   ];
+  const { columns, components } = useResizableColumns(baseColumns);
 
   const rowSelection =
-    selectable && onChangeSelectedPaths
+    selectionMode && onChangeSelectedPaths
       ? {
           selectedRowKeys: selectedPaths,
           preserveSelectedRowKeys: true,
@@ -104,32 +111,36 @@ export function LibraryTable({
         }
       : undefined;
 
-  const handleChange: TableProps<AudioTrack>["onChange"] = (pagination, _filters, _sorter, extra) => {
-    const nextPage = pagination.current ?? 1;
-    const nextPageSize = pagination.pageSize ?? currentPageSize;
-    setCurrentPage(nextPage);
-    setCurrentPageSize(nextPageSize);
-    setCoverPaths(pageCoverPaths(extra.currentDataSource, nextPage, nextPageSize));
-  };
-
   return (
+    <div className="library-table-shell">
+      {showSelectionToolbar && onChangeSelectedPaths && onChangeSelectionMode && (
+        <Flex className="selection-toolbar" align="center" justify="space-between" gap={12} wrap>
+          {selectionMode ? (
+            <>
+              <Space>
+                <Button icon={<CloseOutlined />} onClick={() => onChangeSelectionMode(false)}>{t("selection.exit")}</Button>
+                <Text>{t("selection.count", { count: selectedPaths.length })}</Text>
+              </Space>
+              <Button type="primary" icon={<CloudSyncOutlined />} disabled={selectedPaths.length === 0} onClick={onOpenBatch}>
+                {t("selection.batch")}
+              </Button>
+            </>
+          ) : (
+            <Button icon={<CheckSquareOutlined />} onClick={() => onChangeSelectionMode(true)}>{t("selection.enter")}</Button>
+          )}
+        </Flex>
+      )}
     <Table
       rowKey="path"
       loading={loading}
       columns={columns}
+      components={components}
       dataSource={tracks}
       size="middle"
       tableLayout="fixed"
-      pagination={{
-        current: currentPage,
-        pageSize: currentPageSize,
-        showSizeChanger: tracks.length > pageSize,
-        pageSizeOptions: [10, 20, 50, 100],
-        showTotal: (total, range) => t("table.range", { start: range[0], end: range[1], total }),
-      }}
+      pagination={false}
       scroll={{ x: 520 }}
       rowSelection={rowSelection}
-      onChange={handleChange}
       rowClassName={(track) => (track.path === selectedPath ? "row-focused" : "")}
       onRow={(track) => ({
         onClick: (event) => {
@@ -138,18 +149,19 @@ export function LibraryTable({
             return;
           }
 
-          onSelectTrack(track.path);
-          onOpenTrack?.(track);
+          if (selectionMode && onChangeSelectedPaths) {
+            onChangeSelectedPaths(
+              selectedPaths.includes(track.path)
+                ? selectedPaths.filter((path) => path !== track.path)
+                : [...selectedPaths, track.path],
+            );
+          } else {
+            onSelectTrack(track.path);
+            onOpenTrack?.(track);
+          }
         },
       })}
     />
+    </div>
   );
-}
-
-function pageCoverPaths(tracks: AudioTrack[], page: number, pageSize: number) {
-  const start = (page - 1) * pageSize;
-  return tracks
-    .slice(start, start + pageSize)
-    .filter((track) => track.hasCover && !track.coverDataUrl)
-    .map((track) => track.path);
 }

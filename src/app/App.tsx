@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { App as AntApp, ConfigProvider, Form, theme } from "antd";
 import enUS from "antd/locale/en_US";
@@ -11,16 +11,37 @@ import {
   loadLibraryTrack,
   loadLibraryTracks,
   readAudioFile,
+  readImageFile,
+  readTextFile,
   removeLibraryFolder,
   saveAudioTags,
   saveArtistSplitConfig,
+  analyzeReplayGain,
+  cancelReplayGain,
   scanFolder,
   upsertLibraryFolder,
+  writeTextFile,
+  writeImageFile,
+  createBatchTask,
+  finishBatchTask,
+  loadBatchTaskItems,
+  loadSourcePlugins,
+  loadDesktopSettings,
+  installSourcePluginArchive,
+  saveSourcePluginSettings,
+  saveDesktopSettings,
+  setSourcePluginEnabled,
+  startBatchTask,
+  uninstallSourcePlugin,
+  updateBatchTaskItem,
+  writeTrackReplayGain,
 } from "../backend/audioApi";
 import { Shell } from "../components/Shell";
+import { AppContextMenu } from "../components/AppContextMenu";
 import { SongDetails } from "../components/SongDetails";
-import { initialPlugins } from "../data/pluginCatalog";
 import { defaultArtistSplitConfig, filterTracks, groupAlbums, groupArtists } from "../domain/library";
+import { completeTagForm, splitGenreValues } from "../domain/tagForm";
+import { lyricsExportExtension } from "../domain/lyrics";
 import { updateCachedCover } from "../hooks/useTrackCovers";
 import {
   getLanguagePreference,
@@ -35,8 +56,18 @@ import { PluginsPage } from "../pages/PluginsPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { SongsPage } from "../pages/SongsPage";
 import { TasksPage } from "../pages/TasksPage";
-import type { ArtistSplitConfig, AudioTrack, LibraryFolder, ScanProgress, SourcePlugin, TagForm, ViewKey } from "./types";
+import type { ArtistSplitConfig, AudioTrack, BatchTask, DesktopSettings, LibraryFolder, ScanProgress, SourcePlugin, TagForm, ViewKey } from "./types";
+import { getReplayGainProgress, publishReplayGainProgress } from "../hooks/useReplayGainProgress";
 import "../App.css";
+
+const defaultDesktopSettings: DesktopSettings = {
+  searchPageSize: 10,
+  lyricFormat: "verbatimLrc",
+  showTranslation: true,
+  showRomanization: true,
+  onlyTranslationIfAvailable: false,
+  removeEmptyLyricLines: true,
+};
 
 export default function App() {
   const { i18n } = useTranslation();
@@ -74,6 +105,7 @@ function LyricoDesktop() {
   const [folders, setFolders] = useState<LibraryFolder[]>([]);
   const [selectedPath, setSelectedPath] = useState<string>();
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [selectionMode, setSelectionMode] = useState(false);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string>();
   const [selectedAlbumId, setSelectedAlbumId] = useState<string>();
   const [selectedArtistId, setSelectedArtistId] = useState<string>();
@@ -85,13 +117,16 @@ function LyricoDesktop() {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [albumDetailsOpen, setAlbumDetailsOpen] = useState(false);
   const [artistDetailsOpen, setArtistDetailsOpen] = useState(false);
-  const [plugins, setPlugins] = useState<SourcePlugin[]>(initialPlugins);
+  const [plugins, setPlugins] = useState<SourcePlugin[]>([]);
   const [artistSplitConfig, setArtistSplitConfig] = useState<ArtistSplitConfig>(defaultArtistSplitConfig);
+  const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(defaultDesktopSettings);
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(getLanguagePreference);
   const [scanProgress, setScanProgress] = useState<ScanProgress>();
+  const [activeBatchTask, setActiveBatchTask] = useState<BatchTask>();
   const [form] = Form.useForm<TagForm>();
   const detailRequest = useRef(0);
   const artistSplitSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const deferredQuery = useDeferredValue(query);
   const isSearchView = activeView === "songs" || activeView === "albums" || activeView === "artists";
   const filteredTracks = useMemo(
@@ -105,20 +140,31 @@ function LyricoDesktop() {
   );
   const selectedTrackSummary = tracks.find((track) => track.path === selectedPath);
   const selectedTrack = detailTrack?.path === selectedPath ? detailTrack : selectedTrackSummary;
+  const selectedTracks = useMemo(() => {
+    const byPath = new Map(tracks.map((track) => [track.path, track]));
+    return selectedPaths.flatMap((path) => {
+      const track = byPath.get(path);
+      return track ? [track] : [];
+    });
+  }, [selectedPaths, tracks]);
 
   useEffect(() => {
-    Promise.all([loadLibraryFolders(), loadLibraryTracks(), loadArtistSplitConfig()])
-      .then(([storedFolders, storedTracks, storedArtistSplitConfig]) => {
+    Promise.all([loadLibraryFolders(), loadLibraryTracks(), loadArtistSplitConfig(), loadSourcePlugins(), loadDesktopSettings()])
+      .then(([storedFolders, storedTracks, storedArtistSplitConfig, storedPlugins, storedSettings]) => {
         setFolders(storedFolders);
         setTracks(storedTracks);
         setSelectedFolderPath(storedFolders[0]?.path);
         setSelectedPath(storedTracks[0]?.path);
         setSelectedPaths([]);
         setArtistSplitConfig(storedArtistSplitConfig);
+        setPlugins(storedPlugins);
+        setDesktopSettings(storedSettings);
       })
       .catch(() => {
         setFolders([]);
         setTracks([]);
+        setPlugins([]);
+        setDesktopSettings(defaultDesktopSettings);
       });
   }, []);
 
@@ -155,6 +201,7 @@ function LyricoDesktop() {
       form.resetFields();
       return;
     }
+    form.resetFields();
     form.setFieldsValue({
       title: selectedTrack.title,
       artist: selectedTrack.artist,
@@ -163,9 +210,21 @@ function LyricoDesktop() {
       trackNumber: selectedTrack.trackNumber,
       discNumber: selectedTrack.discNumber,
       year: selectedTrack.year,
-      genre: selectedTrack.genre,
+      genre: splitGenreValues(selectedTrack.genre),
+      language: selectedTrack.language,
+      composer: selectedTrack.composer,
+      lyricist: selectedTrack.lyricist,
+      copyright: selectedTrack.copyright,
+      rating: selectedTrack.rating,
       comment: selectedTrack.comment,
       lyrics: selectedTrack.lyrics,
+      replayGainTrackGain: selectedTrack.replayGainTrackGain,
+      replayGainTrackPeak: selectedTrack.replayGainTrackPeak,
+      replayGainAlbumGain: selectedTrack.replayGainAlbumGain,
+      replayGainAlbumPeak: selectedTrack.replayGainAlbumPeak,
+      replayGainReferenceLoudness: selectedTrack.replayGainReferenceLoudness,
+      coverDataUrl: undefined,
+      removeCover: false,
     });
   }, [form, selectedTrack]);
 
@@ -246,7 +305,8 @@ function LyricoDesktop() {
     }
     setSaving(true);
     try {
-      const values = await form.validateFields();
+      await form.validateFields();
+      const values = completeTagForm(form.getFieldsValue(true), selectedTrack);
       const saved = await saveAudioTags(selectedTrack.path, values);
       replaceTrack(saved);
       setDetailTrack(saved);
@@ -256,6 +316,203 @@ function LyricoDesktop() {
       message.error(String(error));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function calculateSelectedReplayGain() {
+    if (!selectedTrack || getReplayGainProgress()?.status === "running") return;
+    const jobId = crypto.randomUUID();
+    publishReplayGainProgress({ jobId, path: selectedTrack.path, percent: 0, status: "running" });
+    try {
+      const result = await analyzeReplayGain(selectedTrack.path, jobId);
+      form.setFieldsValue({
+        replayGainTrackGain: result.trackGain,
+        replayGainTrackPeak: result.trackPeak,
+        replayGainReferenceLoudness: result.referenceLoudness,
+      });
+      message.success(t("messages.replayGainCalculated"));
+    } catch (error) {
+      if (!String(error).toLocaleLowerCase().includes("cancelled")) message.error(String(error));
+    }
+  }
+
+  async function cancelActiveReplayGain() {
+    const progress = getReplayGainProgress();
+    if (progress?.status !== "running") return;
+    await cancelReplayGain(progress.jobId).catch((error) => message.error(String(error)));
+  }
+
+  async function runBatchReplayGain() {
+    if (selectedTracks.length === 0 || activeBatchTask?.status === "running") return;
+    let task: BatchTask | undefined;
+    try {
+      task = await createBatchTask("replayGain", selectedTracks.map((track) => track.path));
+      task = await startBatchTask(task.taskId);
+      setActiveBatchTask(task);
+      const items = await loadBatchTaskItems(task.taskId);
+      const tracksByPath = new Map(selectedTracks.map((track) => [track.path, track]));
+
+      for (const item of items) {
+        const track = tracksByPath.get(item.songPath);
+        if (!track) {
+          task = await updateBatchTaskItem(task.taskId, item.itemId, "skipped", 1, "Song is no longer selected");
+          setActiveBatchTask(task);
+          continue;
+        }
+        const hasExistingReplayGain = Boolean(
+          track.replayGainTrackGain ||
+          track.replayGainTrackPeak ||
+          track.replayGainAlbumGain ||
+          track.replayGainAlbumPeak ||
+          track.replayGainReferenceLoudness,
+        );
+        if (hasExistingReplayGain) {
+          task = await updateBatchTaskItem(task.taskId, item.itemId, "skipped", 1, "ReplayGain already exists");
+          setActiveBatchTask(task);
+          continue;
+        }
+
+        task = await updateBatchTaskItem(task.taskId, item.itemId, "running", 0);
+        setActiveBatchTask(task);
+        const jobId = `${task.taskId}:${item.itemId}`;
+        publishReplayGainProgress({ jobId, path: item.songPath, percent: 0, status: "running" });
+        try {
+          const analysis = await analyzeReplayGain(item.songPath, jobId);
+          const saved = await writeTrackReplayGain(item.songPath, analysis.trackGain, analysis.trackPeak);
+          replaceTrack(saved);
+          task = await updateBatchTaskItem(task.taskId, item.itemId, "succeeded", 1);
+          setActiveBatchTask(task);
+        } catch (error) {
+          const errorText = String(error);
+          if (errorText.toLocaleLowerCase().includes("cancelled")) {
+            await updateBatchTaskItem(task.taskId, item.itemId, "cancelled", 0, errorText);
+            task = await finishBatchTask(task.taskId, "cancelled", errorText);
+            setActiveBatchTask(task);
+            message.info(t("tasks.batchCancelled"));
+            return;
+          }
+          task = await updateBatchTaskItem(task.taskId, item.itemId, "failed", 1, errorText);
+          setActiveBatchTask(task);
+        }
+      }
+
+      task = await finishBatchTask(task.taskId, "succeeded");
+      setActiveBatchTask(task);
+      message.success(t("tasks.batchFinished", {
+        success: task.successCount,
+        skipped: task.skippedCount,
+        failed: task.failureCount,
+      }));
+    } catch (error) {
+      if (task?.status === "running") {
+        task = await finishBatchTask(task.taskId, "failed", String(error)).catch(() => task);
+        setActiveBatchTask(task);
+      }
+      message.error(String(error));
+    }
+  }
+
+  async function chooseLocalCover() {
+    const selected = await open({
+      multiple: false,
+      title: t("cover.choose"),
+      filters: [{ name: t("cover.images"), extensions: ["jpg", "jpeg", "png", "webp", "gif"] }],
+    });
+    if (typeof selected !== "string") return;
+    try {
+      const coverDataUrl = await readImageFile(selected);
+      form.setFieldsValue({ coverDataUrl, removeCover: false });
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  async function useSameAlbumCover() {
+    if (!selectedTrack?.album) return;
+    const candidate = tracks.find((track) =>
+      track.path !== selectedTrack.path && track.hasCover && track.album === selectedTrack.album,
+    );
+    if (!candidate) {
+      message.warning(t("cover.noAlbumCover"));
+      return;
+    }
+    try {
+      const source = await loadLibraryTrack(candidate.path);
+      if (!source.coverDataUrl) throw new Error(t("cover.noAlbumCover"));
+      form.setFieldsValue({ coverDataUrl: source.coverDataUrl, removeCover: false });
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  function removeSelectedCover() {
+    form.setFieldsValue({ coverDataUrl: undefined, removeCover: true });
+  }
+
+  function revertSelectedCover() {
+    form.setFieldsValue({ coverDataUrl: undefined, removeCover: false });
+  }
+
+  async function exportSelectedCover() {
+    if (!selectedTrack || form.getFieldValue("removeCover")) {
+      message.warning(t("cover.empty"));
+      return;
+    }
+    const dataUrl = String(form.getFieldValue("coverDataUrl") ?? selectedTrack.coverDataUrl ?? "");
+    if (!dataUrl) {
+      message.warning(t("cover.empty"));
+      return;
+    }
+    const extension = dataUrl.startsWith("data:image/png") ? "png" : dataUrl.startsWith("data:image/webp") ? "webp" : dataUrl.startsWith("data:image/gif") ? "gif" : "jpg";
+    const baseName = selectedTrack.fileName.replace(/\.[^.]+$/, "");
+    const destination = await save({
+      title: t("cover.export"),
+      defaultPath: `${baseName}-cover.${extension}`,
+      filters: [{ name: t("cover.images"), extensions: [extension] }],
+    });
+    if (!destination) return;
+    try {
+      await writeImageFile(destination, dataUrl);
+      message.success(t("messages.coverExported"));
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  async function importLyricsFile() {
+    const selected = await open({
+      multiple: false,
+      title: t("lyrics.import"),
+      filters: [{ name: t("lyrics.files"), extensions: ["lrc", "ttml", "txt"] }],
+    });
+    if (typeof selected !== "string") return;
+    try {
+      form.setFieldValue("lyrics", await readTextFile(selected));
+      message.success(t("messages.lyricsImported"));
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  async function exportLyricsFile() {
+    const lyrics = String(form.getFieldValue("lyrics") ?? "");
+    if (!lyrics.trim() || !selectedTrack) {
+      message.warning(t("lyrics.empty"));
+      return;
+    }
+    const extension = lyricsExportExtension(lyrics);
+    const baseName = selectedTrack.fileName.replace(/\.[^.]+$/, "");
+    const destination = await save({
+      title: t("lyrics.export"),
+      defaultPath: `${baseName}.${extension}`,
+      filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
+    });
+    if (!destination) return;
+    try {
+      await writeTextFile(destination, lyrics);
+      message.success(t("messages.lyricsExported"));
+    } catch (error) {
+      message.error(String(error));
     }
   }
 
@@ -273,8 +530,52 @@ function LyricoDesktop() {
     updateCachedCover(nextTrack.path, nextTrack.coverDataUrl);
   }
 
-  function updatePlugin(plugin: SourcePlugin) {
-    setPlugins((current) => current.map((candidate) => (candidate.id === plugin.id ? plugin : candidate)));
+  async function installPlugin() {
+    const archivePath = await open({
+      title: t("sources.install"),
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Lyrico plugin", extensions: ["zip"] }],
+    });
+    if (typeof archivePath !== "string") return;
+    try {
+      const result = await installSourcePluginArchive(archivePath);
+      setPlugins(await loadSourcePlugins());
+      if (result.installed.length) message.success(t("sources.installSuccess", { count: result.installed.length }));
+      if (result.failed.length) {
+        message.error(result.failed.map((failure) => failure.reason).join("; "));
+      }
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  async function changePluginEnabled(pluginId: string, enabled: boolean) {
+    try {
+      setPlugins(await setSourcePluginEnabled(pluginId, enabled));
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  async function savePluginConfig(pluginId: string, config: Record<string, string>) {
+    try {
+      setPlugins(await saveSourcePluginSettings(pluginId, config));
+      message.success(t("sources.configSaved"));
+    } catch (error) {
+      message.error(String(error));
+      throw error;
+    }
+  }
+
+  async function uninstallPlugin(pluginId: string) {
+    try {
+      setPlugins(await uninstallSourcePlugin(pluginId));
+      message.success(t("sources.uninstallSuccess"));
+    } catch (error) {
+      message.error(String(error));
+      throw error;
+    }
   }
 
   function changeLanguage(preference: LanguagePreference) {
@@ -289,6 +590,32 @@ function LyricoDesktop() {
       .catch((error) => {
         message.error(String(error));
       });
+  }
+
+  function changeDesktopSettings(settings: DesktopSettings) {
+    setDesktopSettings(settings);
+    settingsSaveQueue.current = settingsSaveQueue.current
+      .then(() => saveDesktopSettings(settings))
+      .catch((error) => {
+        message.error(String(error));
+      });
+  }
+
+  function openBatchForSelection() {
+    if (selectedPaths.length === 0) {
+      message.warning(t("messages.selectSongs"));
+      return;
+    }
+    setDetailsOpen(false);
+    setAlbumDetailsOpen(false);
+    setArtistDetailsOpen(false);
+    setSelectionMode(false);
+    setActiveView("tasks");
+  }
+
+  function changeSelectionMode(enabled: boolean) {
+    setSelectedPaths([]);
+    setSelectionMode(enabled);
   }
 
   function renderActivePage() {
@@ -308,9 +635,17 @@ function LyricoDesktop() {
               setAlbumDetailsOpen(true);
             }}
             onSelectTrack={selectTrack}
-            onOpenTrack={openTrackDetails}
+            onOpenTrack={(path) => {
+              setAlbumDetailsOpen(false);
+              void openTrackDetails(path);
+            }}
             onOpenDetails={() => setAlbumDetailsOpen(true)}
             onCloseDetails={() => setAlbumDetailsOpen(false)}
+            selectedPaths={selectedPaths}
+            selectionMode={selectionMode}
+            onChangeSelectedPaths={setSelectedPaths}
+            onChangeSelectionMode={changeSelectionMode}
+            onOpenBatch={openBatchForSelection}
           />
         );
       case "artists":
@@ -328,9 +663,17 @@ function LyricoDesktop() {
               setArtistDetailsOpen(true);
             }}
             onSelectTrack={selectTrack}
-            onOpenTrack={openTrackDetails}
+            onOpenTrack={(path) => {
+              setArtistDetailsOpen(false);
+              void openTrackDetails(path);
+            }}
             onOpenDetails={() => setArtistDetailsOpen(true)}
             onCloseDetails={() => setArtistDetailsOpen(false)}
+            selectedPaths={selectedPaths}
+            selectionMode={selectionMode}
+            onChangeSelectedPaths={setSelectedPaths}
+            onChangeSelectionMode={changeSelectionMode}
+            onOpenBatch={openBatchForSelection}
           />
         );
       case "folders":
@@ -347,23 +690,43 @@ function LyricoDesktop() {
             onSelectFolder={setSelectedFolderPath}
             onSelectTrack={selectTrack}
             onOpenTrack={openTrackDetails}
+            selectedPaths={selectedPaths}
+            selectionMode={selectionMode}
+            onChangeSelectedPaths={setSelectedPaths}
+            onChangeSelectionMode={changeSelectionMode}
+            onOpenBatch={openBatchForSelection}
           />
         );
       case "sources":
-        return <PluginsPage plugins={plugins} tracks={tracks} onChangePlugin={updatePlugin} />;
+        return (
+          <PluginsPage
+            plugins={plugins}
+            onInstall={installPlugin}
+            onChangeEnabled={changePluginEnabled}
+            onSaveConfig={savePluginConfig}
+            onUninstall={uninstallPlugin}
+          />
+        );
       case "tasks":
-        return <TasksPage tracks={tracks} plugins={plugins} />;
+        return (
+          <TasksPage
+            tracks={tracks}
+            plugins={plugins}
+            selectedPaths={selectedPaths}
+            activeTask={activeBatchTask}
+            onRunReplayGain={runBatchReplayGain}
+            onCancelReplayGain={cancelActiveReplayGain}
+          />
+        );
       case "settings":
         return (
           <SettingsPage
             languagePreference={languagePreference}
-            folderCount={folders.length}
-            trackCount={tracks.length}
-            plugins={plugins}
             artistSplitConfig={artistSplitConfig}
+            settings={desktopSettings}
             onChangeLanguage={changeLanguage}
             onChangeArtistSplitConfig={changeArtistSplitConfig}
-            onNavigate={setActiveView}
+            onChangeSettings={changeDesktopSettings}
           />
         );
       case "songs":
@@ -379,6 +742,9 @@ function LyricoDesktop() {
             onChangeQuery={setQuery}
             onSelectTrack={selectTrack}
             onChangeSelectedPaths={setSelectedPaths}
+            selectionMode={selectionMode}
+            onChangeSelectionMode={changeSelectionMode}
+            onOpenBatch={openBatchForSelection}
             onReloadTrack={refreshSelected}
             onOpenDetails={openTrackDetails}
           />
@@ -387,25 +753,44 @@ function LyricoDesktop() {
   }
 
   return (
+    <>
     <Shell
       activeView={activeView}
       folders={folders}
       trackCount={tracks.length}
       scanProgress={scanProgress}
+      selectedTracks={selectedTracks}
       onChangeView={setActiveView}
+      onCancelReplayGain={cancelActiveReplayGain}
+      onRemoveSelectedTrack={(path) => setSelectedPaths((current) => current.filter((candidate) => candidate !== path))}
+      onClearSelectedTracks={() => setSelectedPaths([])}
+      onOpenSelectedBatch={openBatchForSelection}
     >
       {renderActivePage()}
       <SongDetails
         open={detailsOpen}
         loading={detailsLoading}
         track={selectedTrack}
+        plugins={plugins}
+        settings={desktopSettings}
         form={form}
         saving={saving}
         onSave={saveSelected}
         onReload={refreshSelected}
+        onCalculateReplayGain={calculateSelectedReplayGain}
+        onCancelReplayGain={cancelActiveReplayGain}
+        onChooseCover={chooseLocalCover}
+        onUseSameAlbumCover={useSameAlbumCover}
+        onRemoveCover={removeSelectedCover}
+        onRevertCover={revertSelectedCover}
+        onExportCover={exportSelectedCover}
+        onImportLyrics={importLyricsFile}
+        onExportLyrics={exportLyricsFile}
         onClose={() => setDetailsOpen(false)}
       />
     </Shell>
+    <AppContextMenu onNavigate={setActiveView} />
+    </>
   );
 }
 

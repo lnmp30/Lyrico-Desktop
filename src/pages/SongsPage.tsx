@@ -1,8 +1,9 @@
-import { ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { CheckSquareOutlined, CloseOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { Button, Card, Empty, Flex, Input, Space, Tooltip, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack } from "../app/types";
 import { LibraryTable } from "../components/LibraryTable";
+import { LibrarySelectionToolbar } from "../components/LibrarySelectionToolbar";
 
 const { Title, Text } = Typography;
 
@@ -18,6 +19,9 @@ export function SongsPage({
   onChangeSelectedPaths,
   onReloadTrack,
   onOpenDetails,
+  selectionMode,
+  onChangeSelectionMode,
+  onOpenBatch,
 }: {
   tracks: AudioTrack[];
   query: string;
@@ -30,16 +34,19 @@ export function SongsPage({
   onChangeSelectedPaths: (paths: string[]) => void;
   onReloadTrack: () => void;
   onOpenDetails: (path?: string) => void;
+  selectionMode: boolean;
+  onChangeSelectionMode: (enabled: boolean) => void;
+  onOpenBatch: () => void;
 }) {
   const { t } = useTranslation();
   return (
     <div className="workspace page-stack">
-      <Flex justify="space-between" align="start" gap={16} wrap>
-        <div>
+      <Flex className="library-page-header" justify="space-between" align="start" gap={16}>
+        <div className="library-page-header-copy">
           <Title level={2}>{t("songs.title")}</Title>
           <Text type="secondary">{t("songs.description")}</Text>
         </div>
-        <Space wrap>
+        <Space className="library-page-actions">
           <Input
             allowClear
             className="page-search"
@@ -57,6 +64,11 @@ export function SongsPage({
               onClick={onReloadTrack}
             />
           </Tooltip>
+          {selectionMode ? (
+            <Button icon={<CloseOutlined />} onClick={() => onChangeSelectionMode(false)}>{t("selection.exit")}</Button>
+          ) : (
+            <Button icon={<CheckSquareOutlined />} onClick={() => onChangeSelectionMode(true)}>{t("selection.enter")}</Button>
+          )}
         </Space>
       </Flex>
 
@@ -66,6 +78,7 @@ export function SongsPage({
         extra={<Text type="secondary">{t("common.songCount", { count: tracks.length })}</Text>}
         styles={{ body: { padding: 0 } }}
       >
+        {selectionMode ? <LibrarySelectionToolbar selectedCount={selectedPaths.length} onOpenBatch={onOpenBatch} /> : null}
         {tracks.length === 0 && !loading ? (
           <Empty className="page-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("songs.empty")} />
         ) : (
@@ -77,6 +90,10 @@ export function SongsPage({
             onSelectTrack={onSelectTrack}
             onOpenTrack={(track) => onOpenDetails(track.path)}
             onChangeSelectedPaths={onChangeSelectedPaths}
+            selectionMode={selectionMode}
+            onChangeSelectionMode={onChangeSelectionMode}
+            onOpenBatch={onOpenBatch}
+            showSelectionToolbar={false}
           />
         )}
       </Card>

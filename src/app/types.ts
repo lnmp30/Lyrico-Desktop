@@ -16,6 +16,11 @@ export type AudioTrack = {
   album: string;
   albumArtist: string;
   genre: string;
+  language: string;
+  composer: string;
+  lyricist: string;
+  copyright: string;
+  rating?: number;
   comment: string;
   lyrics: string;
   trackNumber?: number;
@@ -33,6 +38,7 @@ export type AudioTrack = {
   replayGainTrackPeak: string;
   replayGainAlbumGain: string;
   replayGainAlbumPeak: string;
+  replayGainReferenceLoudness: string;
 };
 
 export type TagForm = {
@@ -43,9 +49,21 @@ export type TagForm = {
   trackNumber?: number;
   discNumber?: number;
   year: string;
-  genre: string;
+  genre: string[];
+  language: string;
+  composer: string;
+  lyricist: string;
+  copyright: string;
+  rating?: number;
   comment: string;
   lyrics: string;
+  replayGainTrackGain: string;
+  replayGainTrackPeak: string;
+  replayGainAlbumGain: string;
+  replayGainAlbumPeak: string;
+  replayGainReferenceLoudness: string;
+  coverDataUrl?: string;
+  removeCover: boolean;
 };
 
 export type LibraryFolder = {
@@ -67,6 +85,25 @@ export type ScanProgress = {
   message?: string;
 };
 
+export type ReplayGainAnalysis = {
+  jobId: string;
+  path: string;
+  loudnessLufs: number;
+  sampleCount: number;
+  peak: number;
+  trackGain: string;
+  trackPeak: string;
+  referenceLoudness: string;
+};
+
+export type ReplayGainProgress = {
+  jobId: string;
+  path: string;
+  percent: number;
+  status: "running" | "completed" | "cancelled" | "failed";
+  message?: string;
+};
+
 export type StorageInfo = {
   dataPath: string;
   databasePath: string;
@@ -74,24 +111,130 @@ export type StorageInfo = {
   location: "installation" | "appData";
 };
 
-export type PluginCapability = "tags" | "lyrics" | "covers" | "structuredLyrics";
+export type DesktopSettings = {
+  searchPageSize: number;
+  lyricFormat: "plainLrc" | "verbatimLrc" | "enhancedLrc" | "ttml";
+  showTranslation: boolean;
+  showRomanization: boolean;
+  onlyTranslationIfAvailable: boolean;
+  removeEmptyLyricLines: boolean;
+};
+
+export type PluginCapability = "searchSongs" | "getLyrics" | "searchCovers";
+
+export type PluginConfigOption = {
+  value: string;
+  label: string;
+  summary?: string;
+};
+
+export type PluginConfigField = {
+  key: string;
+  title: string;
+  summary?: string;
+  group?: string;
+  type: "text" | "password" | "number" | "switch" | "dropdown" | "textarea" | "markdown";
+  required?: boolean;
+  defaultValue?: string;
+  options?: PluginConfigOption[];
+  dependency?: unknown;
+};
 
 export type SourcePlugin = {
   id: string;
   name: string;
-  version: string;
-  apiVersion: string;
+  versionCode: number;
+  versionName: string;
+  author: string;
+  description: string;
+  apiVersion: number;
+  minHostApiVersion: number;
+  entry: string;
+  includeDirs: string[];
+  icon?: string;
   enabled: boolean;
   capabilities: PluginCapability[];
-  permissions: string[];
-  entryFile: string;
-  config: Record<string, string | number | boolean>;
+  configFields: PluginConfigField[];
+  pluginDir: string;
+  iconPath?: string;
+  iconDataUrl?: string;
+  sortOrder: number;
+  installedAt: string;
+  updatedAt: string;
+  config: Record<string, string>;
+};
+
+export type PluginInstallFailure = {
+  rootPath: string;
+  reason: string;
+  pluginId?: string;
+};
+
+export type PluginInstallResult = {
+  installed: SourcePlugin[];
+  failed: PluginInstallFailure[];
+};
+
+export type PluginSongResult = {
+  id?: string;
+  songId?: string;
+  trackId?: string;
+  title?: string;
+  name?: string;
+  songName?: string;
+  artist?: string | string[];
+  artists?: string | string[];
+  singer?: string;
+  album?: string;
+  albumName?: string;
+  duration?: number;
+  durationMs?: number;
+  date?: string;
+  releaseDate?: string;
+  trackNumber?: string | number;
+  picUrl?: string;
+  coverUrl?: string;
+  artworkUrl?: string;
+  fields?: Record<string, unknown>;
+  internal?: Record<string, unknown>;
 };
 
 export type BatchCandidate = {
   track: AudioTrack;
   sources: string[];
   status: "notRun" | "ready" | "sourceMissing";
+};
+
+export type BatchTaskStatus = "queued" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+
+export type BatchTask = {
+  taskId: string;
+  taskType: string;
+  status: BatchTaskStatus;
+  total: number;
+  current: number;
+  successCount: number;
+  failureCount: number;
+  skippedCount: number;
+  configJson?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  errorMessage?: string;
+};
+
+export type BatchTaskItem = {
+  itemId: string;
+  taskId: string;
+  songPath: string;
+  fileName: string;
+  status: BatchTaskStatus;
+  progress?: number;
+  resultJson?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type CustomArtistSeparator = {

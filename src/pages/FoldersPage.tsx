@@ -1,10 +1,11 @@
 import { DeleteOutlined, FolderAddOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Button, Card, Empty, Flex, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
+import { Button, Card, Empty, Flex, Space, Table, Tag, Tooltip, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, LibraryFolder } from "../app/types";
 import { LibraryTable } from "../components/LibraryTable";
 import { tracksInFolder } from "../domain/library";
 import { formatDateTime, shortPath } from "../utils/format";
+import { useResizableColumns, type BoundedColumn } from "../hooks/useResizableColumns";
 
 const { Title, Text } = Typography;
 
@@ -20,6 +21,11 @@ export function FoldersPage({
   onSelectFolder,
   onSelectTrack,
   onOpenTrack,
+  selectedPaths,
+  selectionMode,
+  onChangeSelectedPaths,
+  onChangeSelectionMode,
+  onOpenBatch,
 }: {
   folders: LibraryFolder[];
   tracks: AudioTrack[];
@@ -32,14 +38,22 @@ export function FoldersPage({
   onSelectFolder: (path?: string) => void;
   onSelectTrack: (path?: string) => void;
   onOpenTrack: (path: string) => void;
+  selectedPaths: string[];
+  selectionMode: boolean;
+  onChangeSelectedPaths: (paths: string[]) => void;
+  onChangeSelectionMode: (enabled: boolean) => void;
+  onOpenBatch: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const selectedFolder = folders.find((folder) => folder.path === selectedFolderPath) ?? folders[0];
   const folderTracks = selectedFolder ? tracksInFolder(tracks, selectedFolder) : [];
-  const columns: TableColumnsType<LibraryFolder> = [
+  const baseColumns: BoundedColumn<LibraryFolder>[] = [
     {
       title: t("folders.folder"),
       dataIndex: "path",
+      width: 420,
+      minWidth: 240,
+      maxWidth: 800,
       render: (path: string) => (
         <div className="track-title-cell">
           <Text strong>{shortPath(path)}</Text>
@@ -47,20 +61,24 @@ export function FoldersPage({
         </div>
       ),
     },
-    { title: t("common.songs"), dataIndex: "trackCount", width: 90, align: "right" },
+    { title: t("common.songs"), dataIndex: "trackCount", width: 90, minWidth: 72, maxWidth: 140, align: "right" },
     {
       title: t("common.status"),
       dataIndex: "status",
       width: 110,
+      minWidth: 90,
+      maxWidth: 180,
       render: (value: LibraryFolder["status"]) => (
         <Tag color={value === "error" ? "error" : value === "scanning" ? "processing" : "success"}>{t(`folders.status.${value}`)}</Tag>
       ),
     },
-    { title: t("folders.lastScan"), dataIndex: "lastScannedAt", width: 170, responsive: ["lg"], render: (value?: string) => formatDateTime(value, i18n.resolvedLanguage) },
+    { title: t("folders.lastScan"), dataIndex: "lastScannedAt", width: 170, minWidth: 140, maxWidth: 260, responsive: ["lg"], render: (value?: string) => formatDateTime(value, i18n.resolvedLanguage) },
     {
       title: t("common.actions"),
       key: "actions",
       width: 100,
+      minWidth: 88,
+      maxWidth: 140,
       align: "right",
       render: (_, folder) => (
         <Space size={4}>
@@ -93,6 +111,7 @@ export function FoldersPage({
       ),
     },
   ];
+  const { columns, components } = useResizableColumns(baseColumns);
 
   return (
     <div className="workspace page-stack">
@@ -117,6 +136,7 @@ export function FoldersPage({
             rowKey="path"
             loading={loading}
             columns={columns}
+            components={components}
             dataSource={folders}
             size="middle"
             tableLayout="fixed"
@@ -140,8 +160,11 @@ export function FoldersPage({
             selectedPath={selectedTrackPath}
             onSelectTrack={onSelectTrack}
             onOpenTrack={(track) => onOpenTrack(track.path)}
-            pageSize={10}
-            selectable={false}
+            selectedPaths={selectedPaths}
+            onChangeSelectedPaths={onChangeSelectedPaths}
+            selectionMode={selectionMode}
+            onChangeSelectionMode={onChangeSelectionMode}
+            onOpenBatch={onOpenBatch}
           />
         </Card>
       )}

@@ -3,16 +3,19 @@ import {
   CloudSyncOutlined,
   CustomerServiceOutlined,
   FolderOutlined,
+  DeleteOutlined,
+  UnorderedListOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   SettingOutlined,
   TagsOutlined,
   TeamOutlined,
 } from "@ant-design/icons";
-import { Button, Flex, Layout, Menu, Progress, Space, Tooltip, Typography, type MenuProps } from "antd";
+import { Button, Drawer, Flex, Layout, Menu, Progress, Space, Table, Tooltip, Typography, type MenuProps, type TableColumnsType } from "antd";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import type { LibraryFolder, ScanProgress, ViewKey } from "../app/types";
+import type { AudioTrack, LibraryFolder, ReplayGainProgress, ScanProgress, ViewKey } from "../app/types";
+import { useReplayGainProgress } from "../hooks/useReplayGainProgress";
 
 const { Sider, Content } = Layout;
 const { Text } = Typography;
@@ -23,17 +26,29 @@ export function Shell({
   folders,
   trackCount,
   scanProgress,
+  selectedTracks,
   onChangeView,
+  onCancelReplayGain,
+  onRemoveSelectedTrack,
+  onClearSelectedTracks,
+  onOpenSelectedBatch,
 }: {
   activeView: ViewKey;
   children: ReactNode;
   folders: LibraryFolder[];
   trackCount: number;
   scanProgress?: ScanProgress;
+  selectedTracks: AudioTrack[];
   onChangeView: (view: ViewKey) => void;
+  onCancelReplayGain: () => void;
+  onRemoveSelectedTrack: (path: string) => void;
+  onClearSelectedTracks: () => void;
+  onOpenSelectedBatch: () => void;
 }) {
   const { t } = useTranslation();
+  const replayGainProgress = useReplayGainProgress();
   const [collapsed, setCollapsed] = useState(false);
+  const [selectionDrawerOpen, setSelectionDrawerOpen] = useState(false);
   const navigationItems: MenuProps["items"] = [
     {
       type: "group",
@@ -91,22 +106,124 @@ export function Shell({
               <Text type="secondary">{t("common.folderCount", { count: folders.length })}</Text>
             </Space>
           )}
+          <Tooltip title={t("selection.showSelected")} placement="right">
+            <Button
+              type="text"
+              aria-label={t("selection.showSelected")}
+              className="side-action-button side-selection-button"
+              icon={
+                <span className="side-action-icon">
+                  <UnorderedListOutlined />
+                  {collapsed && selectedTracks.length > 0 && (
+                    <span className="side-collapsed-count">{formatSelectionCount(selectedTracks.length)}</span>
+                  )}
+                </span>
+              }
+              onClick={() => setSelectionDrawerOpen(true)}
+            >
+              {!collapsed && (
+                <span className="side-action-label">
+                  <span className="side-action-text">{t("selection.selectedSongs")}</span>
+                  <span className="side-selection-count">{formatSelectionCount(selectedTracks.length)}</span>
+                </span>
+              )}
+            </Button>
+          </Tooltip>
           <Tooltip title={collapsed ? t("nav.expand") : t("nav.collapse")} placement="right">
             <Button
               type="text"
               aria-label={collapsed ? t("nav.expand") : t("nav.collapse")}
+              className="side-action-button side-collapse-button"
               icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               onClick={() => setCollapsed((value) => !value)}
-            />
+            >
+              {!collapsed && <span className="side-action-text">{t("nav.collapse")}</span>}
+            </Button>
           </Tooltip>
         </div>
       </Sider>
 
       <Layout className="app-main">
         {scanProgress && <GlobalScanProgress progress={scanProgress} />}
+        {replayGainProgress?.status === "running" && <GlobalReplayGainProgress progress={replayGainProgress} onCancel={onCancelReplayGain} />}
         <Content className="app-content">{children}</Content>
       </Layout>
+      <SelectionDrawer
+        open={selectionDrawerOpen}
+        tracks={selectedTracks}
+        onClose={() => setSelectionDrawerOpen(false)}
+        onRemove={onRemoveSelectedTrack}
+        onClear={onClearSelectedTracks}
+        onOpenBatch={() => {
+          setSelectionDrawerOpen(false);
+          onOpenSelectedBatch();
+        }}
+      />
     </Layout>
+  );
+}
+
+function formatSelectionCount(count: number) {
+  return count > 99 ? "99+" : String(count);
+}
+
+function SelectionDrawer({ open, tracks, onClose, onRemove, onClear, onOpenBatch }: { open: boolean; tracks: AudioTrack[]; onClose: () => void; onRemove: (path: string) => void; onClear: () => void; onOpenBatch: () => void }) {
+  const { t } = useTranslation();
+  const columns: TableColumnsType<AudioTrack> = [
+    {
+      title: t("details.titleField"),
+      dataIndex: "title",
+      ellipsis: true,
+      render: (value: string, track) => value || track.fileName,
+    },
+    {
+      title: t("details.artist"),
+      dataIndex: "artist",
+      width: 140,
+      ellipsis: true,
+      render: (value: string) => value || t("common.unknownArtist"),
+    },
+    {
+      key: "remove",
+      width: 52,
+      align: "center",
+      render: (_, track) => (
+        <Tooltip title={t("common.remove")}>
+          <Button type="text" danger aria-label={t("common.remove")} icon={<DeleteOutlined />} onClick={() => onRemove(track.path)} />
+        </Tooltip>
+      ),
+    },
+  ];
+  return (
+    <Drawer
+      title={t("selection.drawerTitle", { count: tracks.length })}
+      width={480}
+      open={open}
+      onClose={onClose}
+      footer={
+        <Flex justify="space-between" gap={12}>
+          <Button disabled={tracks.length === 0} onClick={onClear}>{t("selection.clear")}</Button>
+          <Button type="primary" disabled={tracks.length === 0} onClick={onOpenBatch}>{t("selection.batch")}</Button>
+        </Flex>
+      }
+    >
+      <Table rowKey="path" size="small" pagination={false} columns={columns} dataSource={tracks} locale={{ emptyText: t("selection.empty") }} />
+    </Drawer>
+  );
+}
+
+function GlobalReplayGainProgress({ progress, onCancel }: { progress: ReplayGainProgress; onCancel: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="global-scan-progress">
+      <Flex justify="space-between" align="center" gap={12}>
+        <Text strong>{t("replayGain.analyzing")}</Text>
+        <Text type="secondary" ellipsis={{ tooltip: progress.path }}>{progress.path}</Text>
+        <Text type="secondary">{progress.percent}%</Text>
+        <Button size="small" danger onClick={onCancel}>{t("common.cancel")}</Button>
+      </Flex>
+      <Progress percent={progress.percent} showInfo={false} size="small" status="active" />
+    </div>
   );
 }
 

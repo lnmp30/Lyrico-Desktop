@@ -4,21 +4,31 @@ mod config;
 mod database;
 mod models;
 mod paths;
+mod plugins;
+mod replay_gain;
 
 use commands::{
-    load_artist_split_config, load_library_folders, load_library_track, load_library_tracks,
-    load_track_covers, get_storage_info, read_audio_file, remove_library_folder, save_artist_split_config,
-    save_audio_tags, scan_folder, upsert_library_folder,
+    analyze_replay_gain, cancel_replay_gain, create_batch_task, fetch_remote_image,
+    finish_batch_task, get_storage_info, install_source_plugin_archive, invoke_source_plugin,
+    load_artist_split_config, load_batch_task_items, load_batch_tasks, load_desktop_settings,
+    load_library_folders, load_library_track, load_library_tracks, load_source_plugins,
+    load_track_covers, read_audio_file, read_image_file, read_text_file, remove_library_folder,
+    save_artist_split_config, save_audio_tags, save_desktop_settings, save_source_plugin_settings,
+    scan_folder, set_source_plugin_enabled, start_batch_task, uninstall_source_plugin,
+    update_batch_task_item, upsert_library_folder, write_image_file, write_text_file,
+    write_track_replay_gain,
 };
 use database::Database;
 use paths::resolve_data_paths;
-use std::collections::HashSet;
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub(crate) struct AppState {
     pub(crate) database: Database,
     pub(crate) active_scans: Mutex<HashSet<String>>,
+    pub(crate) active_replay_gain: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,21 +40,25 @@ pub fn run() {
             let paths = resolve_data_paths(&app.handle()).map_err(std::io::Error::other)?;
             let database = tauri::async_runtime::block_on(Database::open(&paths.database))
                 .map_err(std::io::Error::other)?;
-            let legacy_artist_split = tauri::async_runtime::block_on(
-                database.load_legacy_setting("artist_split_config"),
-            )
-            .map_err(std::io::Error::other)?;
+            let legacy_artist_split =
+                tauri::async_runtime::block_on(database.load_legacy_setting("artist_split_config"))
+                    .map_err(std::io::Error::other)?;
             config::migrate_legacy_artist_split_config(&app.handle(), legacy_artist_split)
                 .map_err(std::io::Error::other)?;
             app.manage(AppState {
                 database,
                 active_scans: Mutex::new(HashSet::new()),
+                active_replay_gain: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             scan_folder,
             read_audio_file,
+            read_image_file,
+            read_text_file,
+            write_text_file,
+            write_image_file,
             save_audio_tags,
             load_library_folders,
             load_library_tracks,
@@ -52,9 +66,27 @@ pub fn run() {
             load_track_covers,
             load_artist_split_config,
             save_artist_split_config,
+            load_desktop_settings,
+            save_desktop_settings,
             upsert_library_folder,
             remove_library_folder,
-            get_storage_info
+            get_storage_info,
+            analyze_replay_gain,
+            cancel_replay_gain,
+            create_batch_task,
+            load_batch_tasks,
+            load_batch_task_items,
+            start_batch_task,
+            update_batch_task_item,
+            finish_batch_task,
+            write_track_replay_gain,
+            load_source_plugins,
+            install_source_plugin_archive,
+            set_source_plugin_enabled,
+            save_source_plugin_settings,
+            uninstall_source_plugin,
+            invoke_source_plugin,
+            fetch_remote_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -3,8 +3,10 @@ use base64::{engine::general_purpose, Engine as _};
 use image::codecs::jpeg::JpegEncoder;
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
-use lofty::picture::Picture;
-use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
+use lofty::picture::{MimeType, Picture, PictureType};
+use lofty::tag::items::popularimeter::{Popularimeter, StarRating};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagExt, TagItem};
+use std::collections::HashSet;
 use std::path::Path;
 
 pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
@@ -24,7 +26,9 @@ pub(crate) fn read_track(
 ) -> Result<AudioTrack, lofty::error::LoftyError> {
     let tagged_file = lofty::read_from_path(path)?;
     let properties = tagged_file.properties();
-    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag());
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -46,8 +50,15 @@ pub(crate) fn read_track(
         .and_then(|tag| tag.album().map(|value| value.into_owned()))
         .unwrap_or_default();
     let genre = tag
-        .and_then(|tag| tag.genre().map(|value| value.into_owned()))
+        .and_then(|tag| joined_tag_values(tag, ItemKey::Genre, "; "))
         .unwrap_or_default();
+    let language = read_text(tag, ItemKey::Language);
+    let composer = read_text(tag, ItemKey::Composer);
+    let lyricist = read_text(tag, ItemKey::Lyricist);
+    let copyright = read_text(tag, ItemKey::CopyrightMessage);
+    let rating = tag
+        .and_then(|tag| tag.ratings().next())
+        .map(|popularimeter| popularimeter.rating() as u8);
     let comment = tag
         .and_then(|tag| tag.comment().map(|value| value.into_owned()))
         .unwrap_or_default();
@@ -69,16 +80,28 @@ pub(crate) fn read_track(
         })
         .unwrap_or_default();
     let replay_gain_track_gain = tag
-        .and_then(|tag| tag.get_string(ItemKey::ReplayGainTrackGain).map(ToOwned::to_owned))
+        .and_then(|tag| {
+            tag.get_string(ItemKey::ReplayGainTrackGain)
+                .map(ToOwned::to_owned)
+        })
         .unwrap_or_default();
     let replay_gain_track_peak = tag
-        .and_then(|tag| tag.get_string(ItemKey::ReplayGainTrackPeak).map(ToOwned::to_owned))
+        .and_then(|tag| {
+            tag.get_string(ItemKey::ReplayGainTrackPeak)
+                .map(ToOwned::to_owned)
+        })
         .unwrap_or_default();
     let replay_gain_album_gain = tag
-        .and_then(|tag| tag.get_string(ItemKey::ReplayGainAlbumGain).map(ToOwned::to_owned))
+        .and_then(|tag| {
+            tag.get_string(ItemKey::ReplayGainAlbumGain)
+                .map(ToOwned::to_owned)
+        })
         .unwrap_or_default();
     let replay_gain_album_peak = tag
-        .and_then(|tag| tag.get_string(ItemKey::ReplayGainAlbumPeak).map(ToOwned::to_owned))
+        .and_then(|tag| {
+            tag.get_string(ItemKey::ReplayGainAlbumPeak)
+                .map(ToOwned::to_owned)
+        })
         .unwrap_or_default();
     let has_cover = tag.is_some_and(|tag| !tag.pictures().is_empty());
     let cover_data_url = match artwork_mode {
@@ -95,6 +118,11 @@ pub(crate) fn read_track(
         album,
         album_artist,
         genre,
+        language,
+        composer,
+        lyricist,
+        copyright,
+        rating,
         comment,
         lyrics: lyrics.clone(),
         track_number: tag.and_then(Accessor::track),
@@ -115,14 +143,12 @@ pub(crate) fn read_track(
         replay_gain_track_peak,
         replay_gain_album_gain,
         replay_gain_album_peak,
+        replay_gain_reference_loudness: String::new(),
         cover_data_url,
     })
 }
 
-pub(crate) fn save_tags(
-    update: TagUpdate,
-    artist_separator: &str,
-) -> Result<AudioTrack, String> {
+pub(crate) fn save_tags(update: TagUpdate, artist_separator: &str) -> Result<AudioTrack, String> {
     let path = std::path::PathBuf::from(&update.path);
     let mut tagged_file = lofty::read_from_path(&path).map_err(|error| error.to_string())?;
     let tag_type = tagged_file.primary_tag_type();
@@ -132,10 +158,37 @@ pub(crate) fn save_tags(
     let tag = tagged_file
         .primary_tag_mut()
         .ok_or_else(|| "This audio format does not support writable primary tags".to_string())?;
-    set_string(tag, update.title, |tag, value| tag.set_title(value), |tag| tag.remove_title());
-    set_string(tag, update.artist, |tag, value| tag.set_artist(value), |tag| tag.remove_artist());
-    set_string(tag, update.album, |tag, value| tag.set_album(value), |tag| tag.remove_album());
-    set_string(tag, update.genre, |tag, value| tag.set_genre(value), |tag| tag.remove_genre());
+    if update.remove_cover {
+        tag.remove_picture_type(PictureType::CoverFront);
+    } else if let Some(cover_data_url) = update.cover_data_url.as_deref() {
+        let picture = picture_from_data_url(cover_data_url)?;
+        tag.remove_picture_type(PictureType::CoverFront);
+        tag.push_picture(picture);
+    }
+    set_string(
+        tag,
+        update.title,
+        |tag, value| tag.set_title(value),
+        |tag| tag.remove_title(),
+    );
+    set_string(
+        tag,
+        update.artist,
+        |tag, value| tag.set_artist(value),
+        |tag| tag.remove_artist(),
+    );
+    set_string(
+        tag,
+        update.album,
+        |tag, value| tag.set_album(value),
+        |tag| tag.remove_album(),
+    );
+    set_text_items(tag, ItemKey::Genre, update.genre);
+    set_text_item(tag, ItemKey::Language, update.language);
+    set_text_item(tag, ItemKey::Composer, update.composer);
+    set_text_item(tag, ItemKey::Lyricist, update.lyricist);
+    set_text_item(tag, ItemKey::CopyrightMessage, update.copyright);
+    set_rating(tag, update.rating);
     set_string(
         tag,
         update.comment,
@@ -146,17 +199,94 @@ pub(crate) fn save_tags(
     set_text_item(tag, ItemKey::Lyrics, update.lyrics);
     set_text_item(tag, ItemKey::RecordingDate, update.year.clone());
     set_text_item(tag, ItemKey::Year, update.year);
-    set_u32(tag, update.track_number, |tag, value| tag.set_track(value), |tag| tag.remove_track());
-    set_u32(tag, update.disc_number, |tag, value| tag.set_disk(value), |tag| tag.remove_disk());
+    set_text_item(
+        tag,
+        ItemKey::ReplayGainTrackGain,
+        update.replay_gain_track_gain,
+    );
+    set_text_item(
+        tag,
+        ItemKey::ReplayGainTrackPeak,
+        update.replay_gain_track_peak,
+    );
+    set_text_item(
+        tag,
+        ItemKey::ReplayGainAlbumGain,
+        update.replay_gain_album_gain,
+    );
+    set_text_item(
+        tag,
+        ItemKey::ReplayGainAlbumPeak,
+        update.replay_gain_album_peak,
+    );
+    let _reference_loudness = update.replay_gain_reference_loudness;
+    set_u32(
+        tag,
+        update.track_number,
+        |tag, value| tag.set_track(value),
+        |tag| tag.remove_track(),
+    );
+    set_u32(
+        tag,
+        update.disc_number,
+        |tag, value| tag.set_disk(value),
+        |tag| tag.remove_disk(),
+    );
     tag.save_to_path(&path, WriteOptions::new())
         .map_err(|error| error.to_string())?;
     read_track(&path, artist_separator, ArtworkMode::Full).map_err(|error| error.to_string())
 }
 
+pub(crate) fn write_replay_gain_tags(
+    path: &Path,
+    artist_separator: &str,
+    track_gain: String,
+    track_peak: String,
+) -> Result<AudioTrack, String> {
+    let mut tagged_file = lofty::read_from_path(path).map_err(|error| error.to_string())?;
+    let tag_type = tagged_file.primary_tag_type();
+    if tagged_file.primary_tag().is_none() {
+        tagged_file.insert_tag(Tag::new(tag_type));
+    }
+    let tag = tagged_file
+        .primary_tag_mut()
+        .ok_or_else(|| "This audio format does not support writable primary tags".to_string())?;
+    set_text_item(tag, ItemKey::ReplayGainTrackGain, track_gain);
+    set_text_item(tag, ItemKey::ReplayGainTrackPeak, track_peak);
+    tag.save_to_path(path, WriteOptions::new())
+        .map_err(|error| error.to_string())?;
+    read_track(path, artist_separator, ArtworkMode::None).map_err(|error| error.to_string())
+}
+
 pub(crate) fn read_cover_thumbnail(path: &Path) -> Option<String> {
     let tagged_file = lofty::read_from_path(path).ok()?;
-    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())?;
     thumbnail_data_url_from_bytes(tag.pictures().first()?.data())
+}
+
+pub(crate) fn read_image_data_url(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    if bytes.len() > 25 * 1024 * 1024 {
+        return Err("Cover image must be smaller than 25 MB".to_string());
+    }
+    image::load_from_memory(&bytes)
+        .map_err(|_| "Selected file is not a valid image".to_string())?;
+    let picture = Picture::unchecked(bytes).build();
+    Ok(format!(
+        "data:{};base64,{}",
+        picture_mime(&picture),
+        general_purpose::STANDARD.encode(picture.data())
+    ))
+}
+
+pub(crate) fn write_image_data_url(path: &Path, data_url: &str) -> Result<(), String> {
+    let picture = picture_from_data_url(data_url)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(path, picture.data()).map_err(|error| error.to_string())
 }
 
 pub(crate) fn is_audio_path(path: &Path) -> bool {
@@ -190,6 +320,42 @@ fn set_text_item(tag: &mut Tag, key: ItemKey, value: String) {
     } else {
         tag.insert_text(key, value);
     }
+}
+
+fn set_text_items(tag: &mut Tag, key: ItemKey, values: Vec<String>) {
+    tag.remove_key(key);
+    let mut seen = HashSet::new();
+    for value in values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        if !seen.insert(value.to_lowercase()) {
+            continue;
+        }
+        tag.push(TagItem::new(key, ItemValue::Text(value)));
+    }
+}
+
+fn set_rating(tag: &mut Tag, rating: Option<u8>) {
+    tag.remove_key(ItemKey::Popularimeter);
+    let rating = match rating {
+        Some(1) => StarRating::One,
+        Some(2) => StarRating::Two,
+        Some(3) => StarRating::Three,
+        Some(4) => StarRating::Four,
+        Some(5) => StarRating::Five,
+        _ => return,
+    };
+    tag.insert_text(
+        ItemKey::Popularimeter,
+        Popularimeter::musicbee(rating, 0).to_string(),
+    );
+}
+
+fn read_text(tag: Option<&Tag>, key: ItemKey) -> String {
+    tag.and_then(|tag| tag.get_string(key).map(ToOwned::to_owned))
+        .unwrap_or_default()
 }
 
 fn set_u32(
@@ -245,5 +411,106 @@ fn picture_mime(picture: &Picture) -> &'static str {
         "image/webp"
     } else {
         "application/octet-stream"
+    }
+}
+
+fn picture_from_data_url(data_url: &str) -> Result<Picture, String> {
+    let (header, encoded) = data_url
+        .split_once(',')
+        .ok_or_else(|| "Invalid cover data URL".to_string())?;
+    if !header.starts_with("data:image/") || !header.ends_with(";base64") {
+        return Err("Cover must be a base64 image data URL".to_string());
+    }
+    let mime = header
+        .trim_start_matches("data:")
+        .trim_end_matches(";base64");
+    let bytes = general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|error| error.to_string())?;
+    image::load_from_memory(&bytes)
+        .map_err(|_| "Selected cover is not a valid image".to_string())?;
+    Ok(Picture::unchecked(bytes)
+        .pic_type(PictureType::CoverFront)
+        .mime_type(MimeType::from_str(mime))
+        .build())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lofty::tag::TagType;
+
+    #[test]
+    fn multi_value_genres_are_trimmed_and_deduplicated() {
+        let mut tag = Tag::new(TagType::VorbisComments);
+        set_text_items(
+            &mut tag,
+            ItemKey::Genre,
+            vec![" Rock ".into(), "Pop".into(), "rock".into(), "".into()],
+        );
+
+        assert_eq!(
+            tag.get_strings(ItemKey::Genre).collect::<Vec<_>>(),
+            vec!["Rock", "Pop"]
+        );
+    }
+
+    #[test]
+    fn rating_uses_a_portable_popularimeter_value() {
+        let mut tag = Tag::new(TagType::Id3v2);
+        set_rating(&mut tag, Some(4));
+
+        assert_eq!(
+            tag.ratings().next().map(|rating| rating.rating() as u8),
+            Some(4)
+        );
+        set_rating(&mut tag, None);
+        assert!(tag.ratings().next().is_none());
+    }
+
+    #[test]
+    fn cover_data_url_is_validated_and_mapped_to_front_cover() {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let data_url = format!(
+            "data:image/png;base64,{}",
+            general_purpose::STANDARD.encode(bytes)
+        );
+        let picture = picture_from_data_url(&data_url).expect("valid PNG cover");
+        assert_eq!(picture.pic_type(), PictureType::CoverFront);
+        assert_eq!(picture.mime_type(), Some(&MimeType::Png));
+        assert!(picture_from_data_url("data:text/plain;base64,SGVsbG8=").is_err());
+    }
+
+    #[test]
+    fn replay_gain_writer_changes_only_supported_replay_gain_fields() {
+        let Ok(source) = std::env::var("LYRICO_REPLAY_GAIN_FIXTURE") else {
+            return;
+        };
+        let source = std::path::PathBuf::from(source);
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("flac");
+        let target = std::env::temp_dir().join(format!(
+            "lyrico-replay-gain-write-{}.{extension}",
+            std::process::id()
+        ));
+        std::fs::copy(&source, &target).expect("fixture should copy");
+        let before = read_track(&target, "/", ArtworkMode::None).expect("fixture should read");
+        let after =
+            write_replay_gain_tags(&target, "/", "-8.50 dB".to_string(), "0.987654".to_string())
+                .expect("ReplayGain tags should write");
+        assert_eq!(after.replay_gain_track_gain, "-8.50 dB");
+        assert_eq!(after.replay_gain_track_peak, "0.987654");
+        assert_eq!(after.title, before.title);
+        assert_eq!(after.artist, before.artist);
+        assert_eq!(after.album, before.album);
+        let _ = std::fs::remove_file(target);
     }
 }

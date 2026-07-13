@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { loadTrackCovers } from "../backend/audioApi";
 
 const coverCache = new Map<string, string>();
-const inFlightRequests = new Map<string, Promise<void>>();
+const pendingRequests = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+const queuedPaths = new Set<string>();
 const defaultRetryDelays = [0, 150, 500];
+let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function useTrackCovers(paths: string[]) {
   const [version, setVersion] = useState(0);
@@ -33,6 +35,22 @@ export function useTrackCovers(paths: string[]) {
   }, [pathKey, version]);
 }
 
+export function useTrackCover(path: string | undefined, enabled = true) {
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    if (!enabled || !path || coverCache.has(path)) return;
+    let cancelled = false;
+    void preloadTrackCovers([path]).finally(() => {
+      if (!cancelled) setVersion((value) => value + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, path]);
+  void version;
+  return path ? coverCache.get(path) : undefined;
+}
+
 export function updateCachedCover(path: string, coverDataUrl?: string) {
   if (coverDataUrl) {
     coverCache.set(path, coverDataUrl);
@@ -59,34 +77,59 @@ export function readCachedTrackCover(path: string) {
 
 export function resetTrackCoverCache() {
   coverCache.clear();
-  inFlightRequests.clear();
+  pendingRequests.clear();
+  queuedPaths.clear();
+  if (flushTimer !== undefined) globalThis.clearTimeout(flushTimer);
+  flushTimer = undefined;
 }
 
 function requestCoverBatch(paths: string[]) {
-  const newPaths = paths.filter((path) => !coverCache.has(path) && !inFlightRequests.has(path));
-  if (newPaths.length > 0) {
-    let request: Promise<void>;
-    request = loadTrackCovers(newPaths)
-      .then((covers) => {
-        for (const cover of covers) {
-          if (cover.coverDataUrl) coverCache.set(cover.path, cover.coverDataUrl);
-        }
-      })
-      .finally(() => {
-        for (const path of newPaths) {
-          if (inFlightRequests.get(path) === request) inFlightRequests.delete(path);
-        }
+  const requests: Promise<void>[] = [];
+  for (const path of paths) {
+    if (coverCache.has(path)) continue;
+    let pending = pendingRequests.get(path);
+    if (!pending) {
+      let resolve: () => void = () => {};
+      const promise = new Promise<void>((next) => {
+        resolve = next;
       });
-    for (const path of newPaths) inFlightRequests.set(path, request);
+      pending = { promise, resolve };
+      pendingRequests.set(path, pending);
+      queuedPaths.add(path);
+    }
+    requests.push(pending.promise);
   }
-
-  return [...new Set(paths.map((path) => inFlightRequests.get(path)).filter(isPromise))];
+  scheduleFlush();
+  return [...new Set(requests)];
 }
 
-function isPromise(value: Promise<void> | undefined): value is Promise<void> {
-  return value !== undefined;
+function scheduleFlush() {
+  if (flushTimer !== undefined || queuedPaths.size === 0) return;
+  flushTimer = globalThis.setTimeout(() => {
+    flushTimer = undefined;
+    void flushCoverQueue();
+  }, 16);
+}
+
+async function flushCoverQueue() {
+  const paths = [...queuedPaths].slice(0, 32);
+  for (const path of paths) queuedPaths.delete(path);
+  try {
+    const covers = await loadTrackCovers(paths);
+    for (const cover of covers) {
+      if (cover.coverDataUrl) coverCache.set(cover.path, cover.coverDataUrl);
+    }
+  } catch {
+    // A failed load remains a cache miss so preloadTrackCovers can retry it.
+  } finally {
+    for (const path of paths) {
+      pendingRequests.get(path)?.resolve();
+      pendingRequests.delete(path);
+    }
+    scheduleFlush();
+  }
 }
 
 function wait(milliseconds: number) {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+  return new Promise<void>((resolve) => globalThis.setTimeout(resolve, milliseconds));
 }

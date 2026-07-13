@@ -1,29 +1,18 @@
 import {
-  Card,
-  Checkbox,
-  Flex,
-  Progress,
-  Statistic,
-  Table,
-  Tabs,
-  Tag,
-  Typography,
-  Space,
-  type TableColumnsType,
-} from "antd";
-import { useMemo, useState } from "react";
+  CalculatorOutlined,
+  EditOutlined,
+  ExportOutlined,
+  FileTextOutlined,
+  FormOutlined,
+  TagsOutlined,
+} from "@ant-design/icons";
+import { Button, Checkbox, Progress, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
+import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import type { AudioTrack, BatchCandidate, SourcePlugin } from "../app/types";
+import type { AudioTrack, BatchTask, SourcePlugin } from "../app/types";
 import { TrackArtwork } from "../components/TrackArtwork";
-import { buildBatchCandidates } from "../domain/library";
 
 const { Title, Text } = Typography;
-
-const batchStatusColor: Record<BatchCandidate["status"], string> = {
-  notRun: "default",
-  ready: "processing",
-  sourceMissing: "warning",
-};
 
 type GainRow = {
   path: string;
@@ -36,29 +25,62 @@ type GainRow = {
   status: "present" | "missing";
 };
 
-export function TasksPage({ tracks, plugins }: { tracks: AudioTrack[]; plugins: SourcePlugin[] }) {
+type BatchOperation = "metadata" | "edit" | "rename" | "lyrics" | "exportLyrics" | "exportCover" | "replaygain";
+
+const availableOperations = new Set<BatchOperation>(["replaygain"]);
+
+const operationIcons: Record<BatchOperation, ReactNode> = {
+  metadata: <TagsOutlined />,
+  edit: <EditOutlined />,
+  rename: <FormOutlined />,
+  lyrics: <FileTextOutlined />,
+  exportLyrics: <ExportOutlined />,
+  exportCover: <ExportOutlined />,
+  replaygain: <CalculatorOutlined />,
+};
+
+export function TasksPage({ tracks, plugins, selectedPaths, activeTask, onRunReplayGain, onCancelReplayGain }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; selectedPaths: string[]; activeTask?: BatchTask; onRunReplayGain: () => void; onCancelReplayGain: () => void }) {
   const { t } = useTranslation();
+  const [operation, setOperation] = useState<BatchOperation>("replaygain");
+  const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
+  const selectedTracks = useMemo(() => tracks.filter((track) => selectedSet.has(track.path)), [selectedSet, tracks]);
+  const operations = ["metadata", "edit", "rename", "lyrics", "exportLyrics", "exportCover", "replaygain"] as BatchOperation[];
+
   return (
     <div className="workspace page-stack tasks-view">
-      <div>
+      <header className="batch-page-header">
         <Title level={2}>{t("tasks.title")}</Title>
-        <Text type="secondary">{t("tasks.description")}</Text>
+        <Text strong>{t("selection.count", { count: selectedTracks.length })}</Text>
+      </header>
+
+      <div className="batch-action-bar" role="toolbar" aria-label={t("tasks.chooseOperation")}>
+        {operations.map((key) => {
+          const available = availableOperations.has(key);
+          const button = (
+            <Button
+              key={key}
+              type={operation === key ? "primary" : "text"}
+              icon={operationIcons[key]}
+              disabled={!available}
+              onClick={() => setOperation(key)}
+            >
+              {t(`tasks.operations.${key}`)}
+            </Button>
+          );
+          return available ? button : <Tooltip key={key} title={t("tasks.unavailable")}>{button}</Tooltip>;
+        })}
       </div>
-      <Tabs
-        className="tasks-tabs"
-        items={[
-          {
-            key: "metadata",
-            label: t("tasks.metadata"),
-            children: <MetadataMatchPanel tracks={tracks} plugins={plugins} />,
-          },
-          {
-            key: "replaygain",
-            label: t("tasks.replayGain"),
-            children: <ReplayGainTagsPanel tracks={tracks} />,
-          },
-        ]}
-      />
+
+      {operation === "metadata" ? (
+        <MetadataMatchPanel tracks={selectedTracks} plugins={plugins} />
+      ) : (
+        <ReplayGainTagsPanel
+          tracks={selectedTracks}
+          task={activeTask}
+          onRun={onRunReplayGain}
+          onCancel={onCancelReplayGain}
+        />
+      )}
     </div>
   );
 }
@@ -67,90 +89,69 @@ function MetadataMatchPanel({ tracks, plugins }: { tracks: AudioTrack[]; plugins
   const { t } = useTranslation();
   const sourceNames = plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.name);
   const [enabledSources, setEnabledSources] = useState<string[]>(sourceNames);
-  const candidates = useMemo(() => buildBatchCandidates(tracks, enabledSources), [tracks, enabledSources]);
 
-  const columns: TableColumnsType<BatchCandidate> = [
+  const columns: TableColumnsType<AudioTrack> = [
     {
       title: t("table.track"),
-      dataIndex: ["track", "title"],
-      render: (_, candidate) => (
+      dataIndex: "title",
+      render: (_, track) => (
         <Space size={12}>
-          <TrackArtwork track={candidate.track} size={38} />
+          <TrackArtwork track={track} size={38} />
           <div className="track-title-cell">
-            <Text strong>{candidate.track.title}</Text>
-            <Text type="secondary">{candidate.track.artist || t("common.unknownArtist")}</Text>
+            <Text strong>{track.title || track.fileName}</Text>
+            <Text type="secondary">{track.artist || t("common.unknownArtist")}</Text>
           </div>
         </Space>
       ),
     },
     {
-      title: t("tasks.localMetadata"),
-      key: "metadata",
+      title: t("table.album"),
+      dataIndex: "album",
       width: 260,
-      render: (_, candidate) => (
-        <div className="track-title-cell">
-          <Text>{candidate.track.album || t("common.unknownAlbum")}</Text>
-          <Text type="secondary">{candidate.track.year || t("tasks.noYear")}</Text>
-        </div>
-      ),
+      render: (album: string) => album || t("common.unknownAlbum"),
     },
     {
-      title: t("common.sources"),
-      dataIndex: "sources",
-      width: 220,
-      render: (sources: string[]) => sources.map((source) => <Tag key={source}>{source}</Tag>),
-    },
-    {
-      title: t("tasks.queue"),
-      dataIndex: "status",
-      width: 130,
-      render: (value: BatchCandidate["status"]) => <Tag color={batchStatusColor[value]}>{t(`tasks.status.${value}`)}</Tag>,
+      title: t("details.year"),
+      dataIndex: "year",
+      width: 100,
+      render: (year: string) => year || "-",
     },
   ];
 
   return (
-    <>
-      <Card size="small">
-        <Flex justify="space-between" align="center" gap={16} wrap>
+    <section className="batch-panel">
+      <div className="batch-panel-toolbar">
         <Checkbox.Group value={enabledSources} onChange={(values) => setEnabledSources(values.map(String))}>
           <Space wrap>
             {sourceNames.map((source) => (
-              <Checkbox key={source} value={source}>
-                {source}
-              </Checkbox>
+              <Checkbox key={source} value={source}>{source}</Checkbox>
             ))}
           </Space>
         </Checkbox.Group>
-        <Text type="secondary">{t("tasks.preview", { count: candidates.length })}</Text>
-        </Flex>
-      </Card>
-      <Progress percent={0} />
-      <Card styles={{ body: { padding: 0 } }}>
-        <Table
-          rowKey={(candidate) => candidate.track.path}
-          columns={columns}
-          dataSource={candidates}
-          size="middle"
-          pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => t("common.trackCount", { count: total }) }}
-          scroll={{ x: 820 }}
-        />
-      </Card>
-    </>
+        {sourceNames.length === 0 && <Text type="secondary">{t("tasks.noSources")}</Text>}
+      </div>
+      <Table
+        className="batch-table"
+        rowKey="path"
+        columns={columns}
+        dataSource={tracks}
+        size="middle"
+        pagination={false}
+        scroll={{ x: 720 }}
+      />
+    </section>
   );
 }
 
-function ReplayGainTagsPanel({ tracks }: { tracks: AudioTrack[] }) {
+function ReplayGainTagsPanel({ tracks, task, onRun, onCancel }: { tracks: AudioTrack[]; task?: BatchTask; onRun: () => void; onCancel: () => void }) {
   const { t } = useTranslation();
-  const rows: GainRow[] = tracks.map((track) => {
+  const rows: GainRow[] = useMemo(() => tracks.map((track) => {
     const hasReplayGain = Boolean(
-      track.replayGainTrackGain ||
-        track.replayGainTrackPeak ||
-        track.replayGainAlbumGain ||
-        track.replayGainAlbumPeak,
+      track.replayGainTrackGain || track.replayGainTrackPeak || track.replayGainAlbumGain || track.replayGainAlbumPeak,
     );
     return {
       path: track.path,
-      title: track.title,
+      title: track.title || track.fileName,
       album: track.album || t("common.unknownAlbum"),
       trackGain: track.replayGainTrackGain || "-",
       trackPeak: track.replayGainTrackPeak || "-",
@@ -158,10 +159,9 @@ function ReplayGainTagsPanel({ tracks }: { tracks: AudioTrack[] }) {
       albumPeak: track.replayGainAlbumPeak || "-",
       status: hasReplayGain ? "present" : "missing",
     };
-  });
-  const taggedCount = rows.filter((row) => row.status === "present").length;
+  }), [t, tracks]);
 
-  const columns: TableColumnsType<GainRow> = [
+  const columns: TableColumnsType<GainRow> = useMemo(() => [
     { title: t("details.titleField"), dataIndex: "title" },
     { title: t("table.album"), dataIndex: "album" },
     { title: t("tasks.trackGain"), dataIndex: "trackGain", width: 130, align: "right" },
@@ -169,35 +169,41 @@ function ReplayGainTagsPanel({ tracks }: { tracks: AudioTrack[] }) {
     { title: t("tasks.albumGain"), dataIndex: "albumGain", width: 130, align: "right" },
     { title: t("tasks.albumPeak"), dataIndex: "albumPeak", width: 130, align: "right" },
     {
-      title: t("tasks.tag"),
+      title: t("common.status"),
       dataIndex: "status",
-      width: 110,
+      width: 100,
       render: (status: GainRow["status"]) => (
         <Tag color={status === "present" ? "success" : "default"}>{t(`tasks.status.${status}`)}</Tag>
       ),
     },
-  ];
+  ], [t]);
 
   return (
-    <>
-      <Card>
-        <Flex className="metric-strip" gap={36} align="center" wrap>
-        <Statistic title={t("common.songs")} value={rows.length} />
-        <Statistic title={t("tasks.replayTags")} value={taggedCount} />
-        <Statistic title={t("tasks.missing")} value={rows.length - taggedCount} />
-        <Progress type="circle" percent={rows.length ? Math.round((taggedCount / rows.length) * 100) : 0} size={76} />
-        </Flex>
-      </Card>
-      <Card styles={{ body: { padding: 0 } }}>
-        <Table
-          rowKey="path"
-          columns={columns}
-          dataSource={rows}
-          size="middle"
-          pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total) => t("common.trackCount", { count: total }) }}
-          scroll={{ x: 920 }}
-        />
-      </Card>
-    </>
+    <section className="batch-panel">
+      <Table
+        className="batch-table"
+        rowKey="path"
+        columns={columns}
+        dataSource={rows}
+        size="middle"
+        pagination={false}
+        scroll={{ x: 920 }}
+      />
+      <footer className="batch-panel-footer">
+        {task && (
+          <div className="batch-task-progress">
+            <Progress percent={task.total ? Math.round((task.current / task.total) * 100) : 0} showInfo={false} size="small" status={task.status === "failed" ? "exception" : task.status === "succeeded" ? "success" : "active"} />
+            <Text type="secondary">
+              {t("tasks.taskSummary", { current: task.current, total: task.total, success: task.successCount, skipped: task.skippedCount, failed: task.failureCount })}
+            </Text>
+          </div>
+        )}
+        {task?.status === "running" ? (
+          <Button danger onClick={onCancel}>{t("common.cancel")}</Button>
+        ) : (
+          <Button type="primary" icon={<CalculatorOutlined />} disabled={tracks.length === 0} onClick={onRun}>{t("tasks.startReplayGain")}</Button>
+        )}
+      </footer>
+    </section>
   );
 }
