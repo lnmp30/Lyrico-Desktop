@@ -1,0 +1,49 @@
+{
+  "common": {
+    "songs": "歌曲",
+    "albums": "专辑",
+    "artists": "艺术家",
+    "folders": "文件夹",
+    "sources": "插件源",
+    "tasks": "批处理",
+    "settings": "设置",
+    "system": "系统",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "unknownArtist": "未知艺术家",
+    "unknownAlbum": "未知专辑",
+    "save": "保存",
+    "reload": "重新读取",
+    "cancel": "取消",
+    "remove": "移除",
+    "status": "状态",
+    "actions": "操作",
+    "all": "全部",
+    "songCount": "{{count}} 首歌曲",
+    "albumCount": "{{count}} 张专辑",
+    "artistCount": "{{count}} 位艺术家",
+    "folderCount": "{{count}} 个文件夹",
+    "trackCount": "{{count}} 首曲目"
+  },
+  "nav": {
+    "library": "音乐库",
+    "tools": "工具",
+    "system": "系统",
+    "expand": "展开侧栏",
+    "collapse": "收起侧栏"
+  },
+  "contextMenu": {
+    "undo": "撤销",
+    "redo": "重做",
+    "cut": "剪切",
+    "copy": "复制",
+    "paste": "粘贴",
+    "selectAll": "全选"
+  },
+  "search": {
+    "placeholder": "搜索{{scope}}…",
+    "songs": "歌曲和艺术家",
+    "albums": "专辑和艺术家",
+    "artists": "艺术家"
+  }
+}

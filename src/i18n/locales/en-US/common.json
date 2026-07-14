@@ -1,0 +1,54 @@
+{
+  "common": {
+    "songs": "Songs",
+    "albums": "Albums",
+    "artists": "Artists",
+    "folders": "Folders",
+    "sources": "Plugin Sources",
+    "tasks": "Batch",
+    "settings": "Settings",
+    "system": "System",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "unknownArtist": "Unknown Artist",
+    "unknownAlbum": "Unknown Album",
+    "save": "Save",
+    "reload": "Reload",
+    "cancel": "Cancel",
+    "remove": "Remove",
+    "status": "Status",
+    "actions": "Actions",
+    "all": "All",
+    "songCount_one": "{{count}} song",
+    "songCount_other": "{{count}} songs",
+    "albumCount_one": "{{count}} album",
+    "albumCount_other": "{{count}} albums",
+    "artistCount_one": "{{count}} artist",
+    "artistCount_other": "{{count}} artists",
+    "folderCount_one": "{{count}} folder",
+    "folderCount_other": "{{count}} folders",
+    "trackCount_one": "{{count}} track",
+    "trackCount_other": "{{count}} tracks"
+  },
+  "nav": {
+    "library": "LIBRARY",
+    "tools": "TOOLS",
+    "system": "SYSTEM",
+    "expand": "Expand sidebar",
+    "collapse": "Collapse sidebar"
+  },
+  "contextMenu": {
+    "undo": "Undo",
+    "redo": "Redo",
+    "cut": "Cut",
+    "copy": "Copy",
+    "paste": "Paste",
+    "selectAll": "Select all"
+  },
+  "search": {
+    "placeholder": "Search {{scope}}...",
+    "songs": "songs and artists",
+    "albums": "albums and artists",
+    "artists": "artists"
+  }
+}

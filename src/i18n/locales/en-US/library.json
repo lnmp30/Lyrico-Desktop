@@ -1,0 +1,81 @@
+{
+  "scanProgress": {
+    "phase": {
+      "enumerating": "Discovering audio files",
+      "reading": "Reading audio tags",
+      "committing": "Updating the library database",
+      "completed": "Library scan completed",
+      "failed": "Library scan failed"
+    }
+  },
+  "selection": {
+    "enter": "Select songs",
+    "selectAlbums": "Select albums",
+    "selectArtists": "Select artists",
+    "exit": "Exit selection",
+    "count_one": "1 song selected",
+    "count_other": "{{count}} songs selected",
+    "batch": "Batch process",
+    "showSelected": "Show selected songs",
+    "selectedSongs": "Selected songs",
+    "drawerTitle": "Selected songs ({{count}})",
+    "clear": "Clear selection",
+    "empty": "No songs selected"
+  },
+  "songs": {
+    "title": "Songs",
+    "description": "Browse songs and edit embedded tags.",
+    "edit": "Edit tags",
+    "reloadHint": "Reload the selected file from disk",
+    "reloadAria": "Reload selected song",
+    "all": "All songs",
+    "selected": "{{count}} selected",
+    "empty": "Add a library folder from Folders"
+  },
+  "table": {
+    "song": "Song",
+    "album": "Album",
+    "track": "Track",
+    "duration": "Duration",
+    "format": "Format",
+    "range": "{{start}}–{{end}} of {{total}}"
+  },
+  "albums": {
+    "title": "Albums",
+    "description": "Browse albums in your local library.",
+    "all": "All albums",
+    "selected": "{{count}} songs selected",
+    "drawer": "Album tracks"
+  },
+  "artists": {
+    "title": "Artists",
+    "description": "Browse artists in your local library.",
+    "all": "All artists",
+    "selected": "{{count}} songs selected",
+    "drawer": "Artist songs"
+  },
+  "folders": {
+    "title": "Folders",
+    "description": "Manage library roots and browse the songs stored in each folder.",
+    "add": "Add folders",
+    "configured": "{{count}} configured",
+    "libraryRoots": "Library folders",
+    "folder": "Folder",
+    "lastScan": "Last scan",
+    "lastScanValue": "Last scan: {{value}}",
+    "rescan": "Rescan folder",
+    "rescanRoot": "Rescan root",
+    "remove": "Remove from library",
+    "removeRoot": "Remove root",
+    "empty": "Add one or more music folders to build your library.",
+    "tracksTitle": "Folder songs",
+    "includeSubfolders": "Include subfolders",
+    "currentFolderOnly": "Current folder only",
+    "searchPlaceholder": "Search this folder",
+    "status": {
+      "ready": "Ready",
+      "scanning": "Scanning",
+      "error": "Error"
+    }
+  }
+}

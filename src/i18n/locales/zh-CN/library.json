@@ -1,0 +1,80 @@
+{
+  "scanProgress": {
+    "phase": {
+      "enumerating": "正在发现音频文件",
+      "reading": "正在读取音频标签",
+      "committing": "正在更新音乐库数据库",
+      "completed": "音乐库扫描完成",
+      "failed": "音乐库扫描失败"
+    }
+  },
+  "selection": {
+    "enter": "选择歌曲",
+    "selectAlbums": "选择专辑",
+    "selectArtists": "选择艺术家",
+    "exit": "退出多选",
+    "count": "已选择 {{count}} 首歌曲",
+    "batch": "批量处理",
+    "showSelected": "查看已选择歌曲",
+    "selectedSongs": "已选歌曲",
+    "drawerTitle": "已选歌曲（{{count}}）",
+    "clear": "清空选择",
+    "empty": "尚未选择歌曲"
+  },
+  "songs": {
+    "title": "歌曲",
+    "description": "浏览歌曲并编辑内嵌标签。",
+    "edit": "编辑标签",
+    "reloadHint": "从磁盘重新读取当前歌曲",
+    "reloadAria": "重新读取当前歌曲",
+    "all": "全部歌曲",
+    "selected": "已选择 {{count}} 首",
+    "empty": "请先在“文件夹”中添加音乐文件夹"
+  },
+  "table": {
+    "song": "歌曲",
+    "album": "专辑",
+    "track": "曲序",
+    "duration": "时长",
+    "format": "格式",
+    "range": "第 {{start}}–{{end}} 项，共 {{total}} 项"
+  },
+  "albums": {
+    "title": "专辑",
+    "description": "按专辑浏览本地音乐库。",
+    "all": "全部专辑",
+    "selected": "已选择 {{count}} 首歌曲",
+    "drawer": "专辑歌曲"
+  },
+  "artists": {
+    "title": "艺术家",
+    "description": "按艺术家浏览本地音乐库。",
+    "all": "全部艺术家",
+    "selected": "已选择 {{count}} 首歌曲",
+    "drawer": "艺术家歌曲"
+  },
+  "folders": {
+    "title": "文件夹",
+    "description": "管理音乐库根目录并浏览各文件夹中的歌曲。",
+    "add": "添加文件夹",
+    "configured": "已配置 {{count}} 个",
+    "libraryRoots": "音乐库文件夹",
+    "folder": "文件夹",
+    "lastScan": "上次扫描",
+    "lastScanValue": "上次扫描：{{value}}",
+    "rescan": "重新扫描文件夹",
+    "rescanRoot": "扫描根目录",
+    "remove": "从音乐库移除",
+    "removeRoot": "移除根目录",
+    "empty": "添加一个或多个音乐文件夹以建立音乐库。",
+    "tracksTitle": "文件夹歌曲",
+    "includeSubfolders": "包含子文件夹",
+    "currentFolderOnly": "仅当前文件夹",
+    "searchPlaceholder": "搜索当前文件夹",
+    "status": {
+      "ready": "就绪",
+      "scanning": "扫描中",
+      "error": "错误"
+    }
+  }
+}

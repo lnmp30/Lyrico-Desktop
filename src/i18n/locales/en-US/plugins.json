@@ -1,0 +1,19 @@
+{
+  "sources": {
+    "title": "Plugin Sources",
+    "description": "Install and configure API v3 plugins for metadata, lyrics and artwork.",
+    "install": "Install plugin ZIP",
+    "installed": "Installed plugins",
+    "none": "No plugins installed",
+    "configuration": "Configuration",
+    "noConfiguration": "This plugin has no configurable fields",
+    "noCapabilities": "No declared capabilities",
+    "manifest": "Manifest",
+    "select": "Select a plugin",
+    "installSuccess": "Installed {{count}} plugin(s)",
+    "configSaved": "Plugin configuration saved",
+    "uninstall": "Uninstall plugin",
+    "uninstallConfirm": "Uninstall {{name}}?",
+    "uninstallSuccess": "Plugin uninstalled"
+  }
+}
