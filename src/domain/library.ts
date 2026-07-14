@@ -24,6 +24,17 @@ export type ArtistGroup = {
   tracks: AudioTrack[];
 };
 
+export type LibraryFolderNode = {
+  key: string;
+  path: string;
+  name: string;
+  rootPath: string;
+  parentKey?: string;
+  directTrackCount: number;
+  totalTrackCount: number;
+  children: LibraryFolderNode[];
+};
+
 export function filterTracks(tracks: AudioTrack[], query: string) {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   if (!normalizedQuery) {
@@ -201,6 +212,21 @@ export function tracksInFolder(tracks: AudioTrack[], folder: LibraryFolder) {
   return tracks.filter((track) => normalizePath(track.path).startsWith(normalizedFolder));
 }
 
+export function buildLibraryFolderTree(folders: LibraryFolder[], tracks: AudioTrack[]) {
+  return folders.map((folder) => buildFolderRoot(folder, tracks));
+}
+
+export function tracksInDirectory(tracks: AudioTrack[], directoryPath: string, includeSubfolders: boolean) {
+  const directory = normalizeFileSystemPath(directoryPath);
+  const directoryKey = directory.toLocaleLowerCase();
+  const directoryPrefix = directoryKey.endsWith("/") ? directoryKey : `${directoryKey}/`;
+  return tracks.filter((track) => {
+    const trackPath = normalizeFileSystemPath(track.path);
+    if (includeSubfolders) return trackPath.toLocaleLowerCase().startsWith(directoryPrefix);
+    return parentDirectory(trackPath).toLocaleLowerCase() === directoryKey;
+  });
+}
+
 export function buildBatchCandidates(tracks: AudioTrack[], sourceNames: string[]): BatchCandidate[] {
   const status: BatchCandidate["status"] = sourceNames.length === 0 ? "sourceMissing" : "ready";
   return tracks.slice(0, 200).map((track) => ({
@@ -226,4 +252,65 @@ function sumDuration(tracks: AudioTrack[]) {
 function normalizePath(path: string) {
   const normalized = path.replace(/\\/g, "/").toLocaleLowerCase();
   return normalized.endsWith("/") ? normalized : `${normalized}/`;
+}
+
+function buildFolderRoot(folder: LibraryFolder, tracks: AudioTrack[]): LibraryFolderNode {
+  const rootPath = normalizeFileSystemPath(folder.path);
+  const root = createFolderNode(rootPath, rootPath, undefined);
+  const nodes = new Map<string, LibraryFolderNode>([[root.key, root]]);
+  const rootPrefix = root.key.endsWith("/") ? root.key : `${root.key}/`;
+
+  for (const track of tracks) {
+    const trackPath = normalizeFileSystemPath(track.path);
+    if (!trackPath.toLocaleLowerCase().startsWith(rootPrefix)) continue;
+    const directory = parentDirectory(trackPath);
+    const relativeDirectory = directory.slice(rootPath.length).replace(/^\/+/, "");
+    let parent = root;
+    let currentPath = rootPath;
+    for (const segment of relativeDirectory.split("/").filter(Boolean)) {
+      currentPath = `${currentPath}/${segment}`;
+      const key = currentPath.toLocaleLowerCase();
+      let node = nodes.get(key);
+      if (!node) {
+        node = createFolderNode(currentPath, rootPath, parent.key);
+        nodes.set(key, node);
+        parent.children.push(node);
+      }
+      parent = node;
+    }
+    parent.directTrackCount += 1;
+  }
+
+  finalizeFolderNode(root);
+  return root;
+}
+
+function createFolderNode(path: string, rootPath: string, parentKey: string | undefined): LibraryFolderNode {
+  const parts = path.split("/").filter(Boolean);
+  return {
+    key: path.toLocaleLowerCase(),
+    path,
+    name: parts[parts.length - 1] ?? path,
+    rootPath,
+    parentKey,
+    directTrackCount: 0,
+    totalTrackCount: 0,
+    children: [],
+  };
+}
+
+function finalizeFolderNode(node: LibraryFolderNode): number {
+  node.children.sort((left, right) => left.name.localeCompare(right.name));
+  node.totalTrackCount = node.directTrackCount + node.children.reduce((sum, child) => sum + finalizeFolderNode(child), 0);
+  return node.totalTrackCount;
+}
+
+function normalizeFileSystemPath(path: string) {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized || "/";
+}
+
+function parentDirectory(path: string) {
+  const separator = path.lastIndexOf("/");
+  return separator > 0 ? path.slice(0, separator) : path;
 }

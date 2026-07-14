@@ -254,6 +254,7 @@ impl BatchProcessor for MatchMetadataProcessor {
                 .to_string(),
             ),
             updated_track: Some(updated),
+            previous_track_path: None,
         })
     }
 }

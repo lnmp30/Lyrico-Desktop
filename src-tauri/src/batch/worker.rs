@@ -160,8 +160,43 @@ fn process_item(
     );
     match result {
         Ok(outcome) => {
-            if let Some(track) = outcome.updated_track.as_ref() {
-                let _ = tauri::async_runtime::block_on(database.update_track_summary(track));
+            let database_result = outcome.updated_track.as_ref().map(|track| {
+                if let Some(previous_path) = outcome.previous_track_path.as_deref() {
+                    tauri::async_runtime::block_on(
+                        database.update_renamed_track_summary(previous_path, track),
+                    )
+                } else {
+                    tauri::async_runtime::block_on(database.update_track_summary(track))
+                }
+            });
+            if let Some(Err(reason)) = database_result {
+                let failure = match (
+                    outcome.previous_track_path.as_deref(),
+                    outcome.updated_track.as_ref(),
+                ) {
+                    (Some(previous_path), Some(track)) => {
+                        match std::fs::rename(&track.path, previous_path) {
+                            Ok(()) => format!(
+                                "Library index update failed and the file rename was rolled back: {reason}"
+                            ),
+                            Err(rollback_error) => format!(
+                                "File was renamed but the library index update failed: {reason}; rollback also failed: {rollback_error}"
+                            ),
+                        }
+                    }
+                    _ => format!("File updated but library index update failed: {reason}"),
+                };
+                update_item(
+                    app,
+                    database,
+                    task,
+                    item,
+                    "failed",
+                    1.0,
+                    None,
+                    Some(failure),
+                );
+                return;
             }
             update_item(
                 app,

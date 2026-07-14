@@ -4,14 +4,16 @@ import {
   ExportOutlined,
   FileTextOutlined,
   FormOutlined,
+  SettingOutlined,
   TagsOutlined,
 } from "@ant-design/icons";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { App, Button, Checkbox, Modal, Progress, Select, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
-import { useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { App, Button, Checkbox, Input, InputNumber, Modal, Progress, Rate, Select, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
-import type { AudioTrack, BatchTask, DesktopSettings, SourcePlugin } from "../app/types";
-import { cancelBatchTask, createBatchTask, loadBatchTasks, startBatchTask } from "../backend/audioApi";
+import type { AudioTrack, BatchTask, CharacterMappingRule, DesktopSettings, RenamePreview, SourcePlugin } from "../app/types";
+import { cancelBatchTask, createBatchTask, loadBatchTasks, previewBatchRename, readImageFile, startBatchTask } from "../backend/audioApi";
 import { TrackArtwork } from "../components/TrackArtwork";
 import { LYRIC_FORMATS, type LyricFormat } from "../backend/lyricsApi";
 
@@ -45,6 +47,35 @@ type MetadataMatchConfig = {
   concurrency: number;
 };
 
+type RenameFilesConfig = {
+  renameFormat: string;
+  characterMappingRules: CharacterMappingRule[];
+  plannedPaths: Record<string, string>;
+  concurrency: number;
+};
+
+const batchEditFields = [
+  ["title", "details.titleField", "text"], ["artist", "details.artist", "text"],
+  ["albumArtist", "details.albumArtist", "text"], ["album", "details.album", "text"],
+  ["year", "details.year", "text"], ["language", "details.language", "text"],
+  ["genre", "details.genre", "text"], ["trackNumber", "details.track", "number"],
+  ["discNumber", "details.disc", "number"], ["composer", "details.composer", "text"],
+  ["lyricist", "details.lyricist", "text"], ["copyright", "details.copyright", "text"],
+  ["comment", "details.comment", "text"], ["lyrics", "details.lyrics", "multiline"],
+  ["replayGainTrackGain", "tasks.trackGain", "text"], ["replayGainTrackPeak", "tasks.trackPeak", "text"],
+  ["replayGainAlbumGain", "tasks.albumGain", "text"], ["replayGainAlbumPeak", "tasks.albumPeak", "text"],
+] as const;
+
+type BatchEditField = typeof batchEditFields[number][0];
+type BatchEditConfig = Partial<Record<BatchEditField, string>> & {
+  rating?: number;
+  ratingModified: boolean;
+  coverPath?: string;
+  removeCover: boolean;
+  lyricsOffsetMs: number;
+  concurrency: number;
+};
+
 const metadataTargets = [
   ["title", "details.titleField"], ["artist", "details.artist"], ["album", "details.album"],
   ["album_artist", "details.albumArtist"], ["genre", "details.genre"], ["date", "details.year"],
@@ -70,7 +101,7 @@ const defaultTagLineKeywords = [
   "出品：", "出品:", "发行：", "发行:",
 ];
 
-const availableOperations = new Set<BatchOperation>(["metadata", "lyrics", "replaygain"]);
+const availableOperations = new Set<BatchOperation>(["metadata", "edit", "rename", "lyrics", "replaygain"]);
 
 const operationIcons: Record<BatchOperation, ReactNode> = {
   metadata: <TagsOutlined />,
@@ -87,15 +118,19 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
   const { message } = App.useApp();
   const [operation, setOperation] = useState<BatchOperation>("replaygain");
   const [activeReplayGainTask, setActiveReplayGainTask] = useState<BatchTask>();
+  const [activeEditTask, setActiveEditTask] = useState<BatchTask>();
   const [activeLyricsTask, setActiveLyricsTask] = useState<BatchTask>();
   const [activeMetadataTask, setActiveMetadataTask] = useState<BatchTask>();
+  const [activeRenameTask, setActiveRenameTask] = useState<BatchTask>();
   const [submitting, setSubmitting] = useState(false);
   const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
   const selectedTracks = useMemo(() => tracks.filter((track) => selectedSet.has(track.path)), [selectedSet, tracks]);
   const operations = ["metadata", "edit", "rename", "lyrics", "exportLyrics", "exportCover", "replaygain"] as BatchOperation[];
   const replayGainIsActive = isActiveTask(activeReplayGainTask);
+  const editIsActive = isActiveTask(activeEditTask);
   const lyricsIsActive = isActiveTask(activeLyricsTask);
   const metadataIsActive = isActiveTask(activeMetadataTask);
+  const renameIsActive = isActiveTask(activeRenameTask);
 
   useEffect(() => {
     let disposed = false;
@@ -103,11 +138,15 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
       .then((tasks) => {
         if (disposed) return;
         const replayGainTasks = tasks.filter((task) => task.taskType === "replayGain");
+        const editTasks = tasks.filter((task) => task.taskType === "editTags");
         const lyricsTasks = tasks.filter((task) => task.taskType === "formatLyrics");
         const metadataTasks = tasks.filter((task) => task.taskType === "matchMetadata");
+        const renameTasks = tasks.filter((task) => task.taskType === "renameFiles");
         setActiveReplayGainTask(currentOrLatestTask(replayGainTasks));
+        setActiveEditTask(currentOrLatestTask(editTasks));
         setActiveLyricsTask(currentOrLatestTask(lyricsTasks));
         setActiveMetadataTask(currentOrLatestTask(metadataTasks));
+        setActiveRenameTask(currentOrLatestTask(renameTasks));
       })
       .catch((error) => message.error(String(error)));
     return () => {
@@ -130,10 +169,14 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
       };
       if (payload.taskType === "replayGain") {
         updateTask(setActiveReplayGainTask);
+      } else if (payload.taskType === "editTags") {
+        updateTask(setActiveEditTask);
       } else if (payload.taskType === "formatLyrics") {
         updateTask(setActiveLyricsTask);
       } else if (payload.taskType === "matchMetadata") {
         updateTask(setActiveMetadataTask);
+      } else if (payload.taskType === "renameFiles") {
+        updateTask(setActiveRenameTask);
       }
     }).then((dispose) => {
       if (disposed) dispose();
@@ -168,6 +211,33 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
     try {
       const cancelled = await cancelBatchTask(activeReplayGainTask.taskId);
       setActiveReplayGainTask(cancelled);
+      message.info(t("tasks.batchCancelled"));
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  async function runBatchEdit(config: BatchEditConfig) {
+    if (selectedTracks.length === 0 || editIsActive) return;
+    setSubmitting(true);
+    try {
+      const created = await createBatchTask(
+        "editTags",
+        selectedTracks.map((track) => track.path),
+        JSON.stringify(config),
+      );
+      setActiveEditTask(await startBatchTask(created.taskId));
+    } catch (error) {
+      message.error(String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function cancelBatchEdit() {
+    if (!activeEditTask || !editIsActive) return;
+    try {
+      setActiveEditTask(await cancelBatchTask(activeEditTask.taskId));
       message.info(t("tasks.batchCancelled"));
     } catch (error) {
       message.error(String(error));
@@ -244,6 +314,33 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
     }
   }
 
+  async function runRenameFiles(config: RenameFilesConfig) {
+    if (selectedTracks.length === 0 || renameIsActive) return;
+    setSubmitting(true);
+    try {
+      const created = await createBatchTask(
+        "renameFiles",
+        selectedTracks.map((track) => track.path),
+        JSON.stringify(config),
+      );
+      setActiveRenameTask(await startBatchTask(created.taskId));
+    } catch (error) {
+      message.error(String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function cancelRenameFiles() {
+    if (!activeRenameTask || !renameIsActive) return;
+    try {
+      setActiveRenameTask(await cancelBatchTask(activeRenameTask.taskId));
+      message.info(t("tasks.batchCancelled"));
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
   return (
     <div className="workspace page-stack tasks-view">
       <header className="batch-page-header">
@@ -277,6 +374,22 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
           submitting={submitting}
           onRun={runMetadataMatch}
           onCancel={cancelMetadataMatch}
+        />
+      ) : operation === "edit" ? (
+        <EditTagsPanel
+          tracks={selectedTracks}
+          task={activeEditTask}
+          submitting={submitting}
+          onRun={runBatchEdit}
+          onCancel={cancelBatchEdit}
+        />
+      ) : operation === "rename" ? (
+        <RenameFilesPanel
+          tracks={selectedTracks}
+          task={activeRenameTask}
+          submitting={submitting}
+          onRun={runRenameFiles}
+          onCancel={cancelRenameFiles}
         />
       ) : operation === "lyrics" ? (
         <LyricsFormatPanel
@@ -428,6 +541,314 @@ function MetadataMatchPanel({ tracks, plugins, task, submitting, onRun, onCancel
       </Modal>
     </section>
   );
+}
+
+function EditTagsPanel({ tracks, task, submitting, onRun, onCancel }: { tracks: AudioTrack[]; task?: BatchTask; submitting: boolean; onRun: (config: BatchEditConfig) => void; onCancel: () => void }) {
+  const { t } = useTranslation();
+  const { message } = App.useApp();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [enabledFields, setEnabledFields] = useState<BatchEditField[]>([]);
+  const [values, setValues] = useState<Record<BatchEditField, string>>(() => Object.fromEntries(batchEditFields.map(([key]) => [key, ""])) as Record<BatchEditField, string>);
+  const [ratingModified, setRatingModified] = useState(false);
+  const [rating, setRating] = useState(0);
+  const [coverPath, setCoverPath] = useState<string>();
+  const [coverPreview, setCoverPreview] = useState<string>();
+  const [removeCover, setRemoveCover] = useState(false);
+  const [lyricsOffsetMs, setLyricsOffsetMs] = useState(0);
+  const [concurrency, setConcurrency] = useState(3);
+  const enabledSet = useMemo(() => new Set(enabledFields), [enabledFields]);
+  const hasOperation = enabledFields.length > 0 || ratingModified || Boolean(coverPath) || removeCover || lyricsOffsetMs !== 0;
+
+  async function chooseBatchCover() {
+    const selected = await open({
+      multiple: false,
+      title: t("cover.choose"),
+      filters: [{ name: t("cover.images"), extensions: ["jpg", "jpeg", "png", "webp", "gif"] }],
+    });
+    if (typeof selected !== "string") return;
+    try {
+      setCoverPreview(await readImageFile(selected));
+      setCoverPath(selected);
+      setRemoveCover(false);
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  function run() {
+    const config: BatchEditConfig = {
+      rating: ratingModified && rating > 0 ? rating : undefined,
+      ratingModified,
+      coverPath,
+      removeCover,
+      lyricsOffsetMs,
+      concurrency,
+    };
+    for (const field of enabledFields) config[field] = values[field];
+    onRun(config);
+  }
+
+  function toggleField(field: BatchEditField, enabled: boolean) {
+    setEnabledFields((current) => enabled ? [...new Set([...current, field])] : current.filter((candidate) => candidate !== field));
+  }
+
+  const columns: TableColumnsType<AudioTrack> = [
+    {
+      title: t("table.track"),
+      dataIndex: "title",
+      render: (_, track) => (
+        <Space size={12}>
+          <TrackArtwork track={track} size={38} />
+          <div className="track-title-cell">
+            <Text strong>{track.title || track.fileName}</Text>
+            <Text type="secondary">{track.artist || t("common.unknownArtist")}</Text>
+          </div>
+        </Space>
+      ),
+    },
+    { title: t("table.album"), dataIndex: "album", width: 220, render: (album: string) => album || t("common.unknownAlbum") },
+    {
+      title: t("tasks.editPreview"),
+      width: 300,
+      render: (_, track) => {
+        const previews = enabledFields.map((field) => {
+          const definition = batchEditFields.find(([key]) => key === field);
+          const oldValue = previewTagValue(track[field]);
+          return `${t(definition?.[1] ?? field)}: ${oldValue} → ${previewTagValue(values[field])}`;
+        });
+        if (ratingModified) previews.push(`${t("details.rating")}: ${track.rating ?? "∅"} → ${rating || "∅"}`);
+        if (lyricsOffsetMs) previews.push(`${t("tasks.lyricsOffset")}: ${lyricsOffsetMs > 0 ? "+" : ""}${lyricsOffsetMs} ms`);
+        if (coverPath || removeCover) previews.push(t(removeCover ? "tasks.removeCoverPreview" : "tasks.replaceCoverPreview"));
+        return previews.length ? (
+          <Space orientation="vertical" size={2}>
+            {previews.slice(0, 4).map((preview, index) => <Text key={`${index}:${preview}`} type="secondary" ellipsis={{ tooltip: preview }}>{preview}</Text>)}
+            {previews.length > 4 ? <Text type="secondary">{t("tasks.moreChanges", { count: previews.length - 4 })}</Text> : null}
+          </Space>
+        ) : <Text type="secondary">{t("tasks.noChanges")}</Text>;
+      },
+    },
+  ];
+
+  return (
+    <section className="batch-panel">
+      <div className="batch-panel-toolbar">
+        <Space wrap>
+          <Button onClick={() => setSettingsOpen(true)}>{t("tasks.editFields")}</Button>
+          <Select value={concurrency} onChange={setConcurrency} style={{ width: 130 }} options={[1, 2, 3, 4, 5].map((value) => ({ value, label: t("tasks.concurrency", { count: value }) }))} />
+          <Tag color={hasOperation ? "processing" : "default"}>{t("tasks.changeCount", { count: enabledFields.length + Number(ratingModified) + Number(Boolean(coverPath) || removeCover) + Number(lyricsOffsetMs !== 0) })}</Tag>
+        </Space>
+      </div>
+      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={false} scroll={{ x: 900 }} />
+      <footer className="batch-panel-footer">
+        {task && <BatchTaskProgress task={task} />}
+        {isActiveTask(task) ? (
+          <Button danger onClick={onCancel}>{t("common.cancel")}</Button>
+        ) : (
+          <Button type="primary" icon={<EditOutlined />} loading={submitting} disabled={tracks.length === 0 || !hasOperation} onClick={run}>{t("tasks.startEditTags")}</Button>
+        )}
+      </footer>
+      <Modal title={t("tasks.editFields")} open={settingsOpen} width={760} onCancel={() => setSettingsOpen(false)} onOk={() => setSettingsOpen(false)} destroyOnHidden>
+        <Space orientation="vertical" size={12} className="full-width batch-edit-fields">
+          <Text type="secondary">{t("tasks.editEmptyHint")}</Text>
+          {batchEditFields.map(([field, label, inputType]) => (
+            <div className="batch-edit-field" key={field}>
+              <Checkbox checked={enabledSet.has(field)} onChange={(event) => toggleField(field, event.target.checked)}>{t(label)}</Checkbox>
+              {inputType === "multiline" ? (
+                <Input.TextArea disabled={!enabledSet.has(field)} value={values[field]} autoSize={{ minRows: 3, maxRows: 8 }} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />
+              ) : inputType === "number" ? (
+                <Input type="number" min={1} step={1} disabled={!enabledSet.has(field)} value={values[field]} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />
+              ) : (
+                <Input disabled={!enabledSet.has(field)} value={values[field]} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />
+              )}
+            </div>
+          ))}
+          <div className="batch-edit-field">
+            <Checkbox checked={ratingModified} onChange={(event) => setRatingModified(event.target.checked)}>{t("details.rating")}</Checkbox>
+            <Rate disabled={!ratingModified} allowClear value={rating} onChange={setRating} />
+          </div>
+          <div className="batch-edit-field">
+            <Text>{t("tasks.lyricsOffset")}</Text>
+            <InputNumber className="full-width" value={lyricsOffsetMs} step={100} addonAfter="ms" onChange={(value) => setLyricsOffsetMs(Number(value ?? 0))} />
+          </div>
+          <div className="batch-edit-field">
+            <Text>{t("details.cover")}</Text>
+            <Space wrap>
+              {coverPreview ? <TrackArtwork track={{ coverDataUrl: coverPreview }} size={64} showDimensions /> : null}
+              <Button onClick={() => void chooseBatchCover()}>{t("cover.choose")}</Button>
+              <Button danger type={removeCover ? "primary" : "default"} onClick={() => { setRemoveCover(true); setCoverPath(undefined); setCoverPreview(undefined); }}>{t("cover.remove")}</Button>
+              <Button onClick={() => { setRemoveCover(false); setCoverPath(undefined); setCoverPreview(undefined); }}>{t("cover.revert")}</Button>
+            </Space>
+          </div>
+        </Space>
+      </Modal>
+    </section>
+  );
+}
+
+function previewTagValue(value: unknown) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "∅";
+  return text.length > 42 ? `${text.slice(0, 39)}…` : text;
+}
+
+const renamePresets = ["@1 - @2", "@2 - @1", "@5 - @1", "@4 - @1", "@2 - @4 - @5 - @1"];
+const illegalFileCharacters = ["\\", "/", ":", "*", "?", "\"", "<", ">", "|"];
+const defaultCharacterReplacements: Record<string, string> = {
+  "\\": "＼", "/": "／", ":": "：", "*": "＊", "?": "？", "\"": "＂", "<": "＜", ">": "＞", "|": "｜",
+};
+const renameReplacementOptions = ["", "、", ",", "，", "＼", "／", "：", "＊", "？", "＂", "＜", "＞", "｜", "&"];
+
+function defaultRenameRules(): CharacterMappingRule[] {
+  return [{
+    id: "builtin-invalid-file-characters",
+    name: "Invalid file characters",
+    charMappings: { ...defaultCharacterReplacements },
+    description: "Replace characters that are invalid in Windows file names",
+    isBuiltIn: true,
+    isEnabled: true,
+  }];
+}
+
+function RenameFilesPanel({ tracks, task, submitting, onRun, onCancel }: { tracks: AudioTrack[]; task?: BatchTask; submitting: boolean; onRun: (config: RenameFilesConfig) => void; onCancel: () => void }) {
+  const { t } = useTranslation();
+  const [renameFormat, setRenameFormat] = useState("@1 - @2");
+  const [rules, setRules] = useState<CharacterMappingRule[]>(defaultRenameRules);
+  const [previews, setPreviews] = useState<RenamePreview[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const previewRequest = useRef(0);
+  const paths = useMemo(() => tracks.map((track) => track.path), [tracks]);
+
+  useEffect(() => {
+    const requestId = ++previewRequest.current;
+    if (paths.length === 0) {
+      setPreviews([]);
+      setPreviewError("");
+      setPreviewLoading(false);
+      return;
+    }
+    setPreviewLoading(true);
+    const timer = window.setTimeout(() => {
+      void previewBatchRename(paths, renameFormat, rules)
+        .then((result) => {
+          if (previewRequest.current !== requestId) return;
+          setPreviews(result);
+          setPreviewError("");
+        })
+        .catch((error) => {
+          if (previewRequest.current !== requestId) return;
+          setPreviews([]);
+          setPreviewError(String(error));
+        })
+        .finally(() => {
+          if (previewRequest.current === requestId) setPreviewLoading(false);
+        });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [paths, renameFormat, rules]);
+
+  const changedCount = previews.filter((preview) => !sameFilePath(preview.originalPath, preview.newPath)).length;
+  const conflictCount = previews.filter((preview) => preview.conflict).length;
+  const taskIsActive = isActiveTask(task);
+  const canRun = tracks.length > 0 && previews.length === tracks.length && changedCount > 0 && !previewLoading && !previewError;
+
+  function updateReplacement(character: string, replacement: string) {
+    setRules((current) => current.map((rule, index) => index === 0 ? {
+      ...rule,
+      charMappings: { ...rule.charMappings, [character]: replacement },
+    } : rule));
+  }
+
+  function run() {
+    onRun({
+      renameFormat,
+      characterMappingRules: rules,
+      plannedPaths: Object.fromEntries(previews.map((preview) => [preview.originalPath, preview.newPath])),
+      concurrency: 3,
+    });
+  }
+
+  const columns: TableColumnsType<RenamePreview> = [
+    {
+      title: t("tasks.originalFileName"),
+      dataIndex: "originalPath",
+      render: (path: string) => <Text ellipsis={{ tooltip: path }}>{fileNameFromPath(path)}</Text>,
+    },
+    {
+      title: t("tasks.newFileName"),
+      dataIndex: "newPath",
+      render: (path: string, preview) => <Text strong={!sameFilePath(preview.originalPath, path)} ellipsis={{ tooltip: path }}>{fileNameFromPath(path)}</Text>,
+    },
+    {
+      title: t("common.status"),
+      width: 150,
+      render: (_, preview) => preview.conflict
+        ? <Tag color="warning">{t("tasks.renameConflictResolved")}</Tag>
+        : sameFilePath(preview.originalPath, preview.newPath)
+          ? <Tag>{t("tasks.renameUnchanged")}</Tag>
+          : <Tag color="processing">{t("tasks.renameReady")}</Tag>,
+    },
+  ];
+
+  return (
+    <section className="batch-panel">
+      <div className="batch-panel-toolbar rename-toolbar">
+        <div className="rename-format-row">
+          <Select
+            value={renamePresets.includes(renameFormat) ? renameFormat : undefined}
+            placeholder={t("tasks.renamePreset")}
+            onChange={setRenameFormat}
+            options={renamePresets.map((value) => ({ value, label: value }))}
+          />
+          <Input value={renameFormat} onChange={(event) => setRenameFormat(event.target.value)} placeholder="@1 - @2" />
+          <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>{t("tasks.characterMappings")}</Button>
+        </div>
+        <Text type="secondary">{t("tasks.renamePlaceholderHint")}</Text>
+        <Space wrap>
+          <Tag color="processing">{t("tasks.renameChangeCount", { count: changedCount })}</Tag>
+          {conflictCount > 0 ? <Tag color="warning">{t("tasks.renameConflictCount", { count: conflictCount })}</Tag> : null}
+          {previewLoading ? <Text type="secondary">{t("tasks.generatingPreview")}</Text> : null}
+          {previewError ? <Text type="danger">{previewError}</Text> : null}
+        </Space>
+      </div>
+      <Table className="batch-table" rowKey="originalPath" columns={columns} dataSource={previews} loading={previewLoading} size="middle" pagination={previews.length > 12 ? { pageSize: 12, showSizeChanger: false } : false} scroll={{ x: 760 }} />
+      <footer className="batch-panel-footer">
+        {task && <BatchTaskProgress task={task} />}
+        {taskIsActive ? (
+          <Button danger onClick={onCancel}>{t("common.cancel")}</Button>
+        ) : (
+          <Button type="primary" icon={<FormOutlined />} loading={submitting} disabled={!canRun} onClick={run}>{t("tasks.startRename")}</Button>
+        )}
+      </footer>
+      <Modal title={t("tasks.characterMappings")} open={settingsOpen} onCancel={() => setSettingsOpen(false)} onOk={() => setSettingsOpen(false)} destroyOnHidden>
+        <Space orientation="vertical" size={12} className="full-width">
+          <Text type="secondary">{t("tasks.characterMappingsHint")}</Text>
+          <div className="rename-mapping-list">
+            {illegalFileCharacters.map((character) => (
+              <div className="rename-mapping-row" key={character}>
+                <Text code>{character}</Text>
+                <Text type="secondary">→</Text>
+                <Select
+                  value={rules[0]?.charMappings[character] ?? ""}
+                  onChange={(value) => updateReplacement(character, value)}
+                  options={renameReplacementOptions.map((value) => ({ value, label: value || t("tasks.removeCharacter") }))}
+                />
+              </div>
+            ))}
+          </div>
+        </Space>
+      </Modal>
+    </section>
+  );
+}
+
+function fileNameFromPath(path: string) {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+function sameFilePath(left: string, right: string) {
+  return left.localeCompare(right, undefined, { sensitivity: "accent" }) === 0;
 }
 
 function LyricsFormatPanel({ tracks, task, submitting, onRun, onCancel }: { tracks: AudioTrack[]; task?: BatchTask; submitting: boolean; onRun: (config: LyricsFormatConfig) => void; onCancel: () => void }) {

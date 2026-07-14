@@ -8,6 +8,8 @@ import type { AudioTrack, DesktopSettings, PluginSongResult, ReplayGainProgress,
 import { fetchRemoteImage, invokeSourcePlugin } from "../backend/audioApi";
 import { extractPlainLyricsText, LYRIC_FORMATS, preferredPluginLyricFormat, processLyricsText, renderPluginLyrics, type LyricFormat } from "../backend/lyricsApi";
 import { formatDuration } from "../utils/format";
+import { useImageDimensions } from "../hooks/useImageDimensions";
+import { CoverCropModal } from "./CoverCropModal";
 import { TrackArtwork } from "./TrackArtwork";
 import { useReplayGainProgress } from "../hooks/useReplayGainProgress";
 
@@ -58,12 +60,15 @@ export function SongDetails({
   const activeReplayGainProgress = useReplayGainProgress();
   const replayGainProgress = activeReplayGainProgress?.path === track?.path ? activeReplayGainProgress : undefined;
   const [activeTab, setActiveTab] = useState("local");
-  const coverDataUrl = Form.useWatch("coverDataUrl", form);
-  const removeCover = Form.useWatch("removeCover", form);
+  const [coverCropOpen, setCoverCropOpen] = useState(false);
+  const coverDataUrl = Form.useWatch("coverDataUrl", { form, preserve: true });
+  const removeCover = Form.useWatch("removeCover", { form, preserve: true });
+  const activeCoverDataUrl = removeCover ? undefined : coverDataUrl ?? track?.coverDataUrl;
   const coverTrack = track ? { ...track, coverDataUrl: removeCover ? undefined : coverDataUrl ?? track.coverDataUrl, hasCover: removeCover ? false : Boolean(coverDataUrl || track.hasCover) } : undefined;
 
   useEffect(() => {
     setActiveTab("local");
+    setCoverCropOpen(false);
   }, [track?.path]);
 
   return (
@@ -88,7 +93,7 @@ export function SongDetails({
       ) : (
         <div className="editor-layout">
           <header className="editor-media-summary">
-            <TrackArtwork track={coverTrack ?? track} size={112} />
+            <TrackArtwork track={coverTrack ?? track} size={112} showDimensions />
             <Flex vertical gap={8} className="editor-cover-actions">
               <Space wrap>
                 <Button onClick={onChooseCover}>{t("cover.replace")}</Button>
@@ -96,6 +101,7 @@ export function SongDetails({
               </Space>
               <Space wrap>
                 <Button disabled={!coverTrack?.hasCover} onClick={onExportCover}>{t("cover.export")}</Button>
+                <Button disabled={!activeCoverDataUrl} onClick={() => setCoverCropOpen(true)}>{t("cover.crop")}</Button>
                 <Button danger disabled={!coverTrack?.hasCover} onClick={onRemoveCover}>{t("cover.remove")}</Button>
                 <Button onClick={onRevertCover}>{t("cover.revert")}</Button>
               </Space>
@@ -111,6 +117,12 @@ export function SongDetails({
               { key: "online", label: t("details.onlineMatch"), children: <OnlineMatch track={track} plugins={plugins} settings={settings} form={form} onApplied={() => setActiveTab("local")} /> },
               { key: "file", label: t("details.fileInfo"), children: <FileInformation track={track} /> },
             ]}
+          />
+          <CoverCropModal
+            open={coverCropOpen}
+            source={activeCoverDataUrl}
+            onCancel={() => setCoverCropOpen(false)}
+            onConfirm={(dataUrl) => form.setFieldsValue({ coverDataUrl: dataUrl, removeCover: false })}
           />
         </div>
       )}
@@ -163,6 +175,7 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
   const [coverReviewUrl, setCoverReviewUrl] = useState<string>();
   const [coverSize, setCoverSize] = useState<number>();
   const [coverConfirming, setCoverConfirming] = useState(false);
+  const coverReviewDimensions = useImageDimensions(coverReviewUrl);
   const [lyricsReview, setLyricsReview] = useState<string>();
   const [lyricsPayload, setLyricsPayload] = useState<unknown>();
   const [lyricsFormat, setLyricsFormat] = useState<LyricFormat>("verbatimLrc");
@@ -422,7 +435,12 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
       >
         <Space orientation="vertical" size={16} className="full-width">
           {error ? <Alert type="error" showIcon message={error} /> : null}
-          <div className="online-cover-preview"><Avatar shape="square" size={220} src={coverReviewUrl} /></div>
+          <div className="online-cover-preview">
+            <span className="artwork-frame">
+              <Avatar shape="square" size={220} src={coverReviewUrl} />
+              {coverReviewDimensions ? <span className="cover-dimensions">{coverReviewDimensions.width} × {coverReviewDimensions.height}</span> : null}
+            </span>
+          </div>
           <Select
             value={coverSize ?? "original"}
             className="full-width"

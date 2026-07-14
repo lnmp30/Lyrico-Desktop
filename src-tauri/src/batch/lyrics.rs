@@ -69,6 +69,7 @@ impl BatchProcessor for LyricsFormatProcessor {
                 .to_string(),
             ),
             updated_track: Some(updated),
+            previous_track_path: None,
         })
     }
 }

@@ -363,6 +363,32 @@ impl Database {
         transaction.commit().map_err(|error| error.to_string())
     }
 
+    pub(crate) async fn update_renamed_track_summary(
+        &self,
+        previous_path: &str,
+        track: &AudioTrack,
+    ) -> Result<(), String> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let folder_path = transaction
+            .query_row(
+                "SELECT folder_path FROM songs WHERE path = ?1",
+                params![previous_path],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Renamed library track was not found: {previous_path}"))?;
+        transaction
+            .execute("DELETE FROM songs WHERE path = ?1", params![previous_path])
+            .map_err(|error| error.to_string())?;
+        upsert_track(&transaction, &folder_path, track)?;
+        rebuild_collections(&transaction)?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
     pub(crate) async fn create_batch_task(
         &self,
         task_type: &str,
@@ -1332,5 +1358,72 @@ mod tests {
                 Some("Recovered after application restart")
             );
         });
+    }
+
+    #[test]
+    fn renamed_track_replaces_old_library_path_transactionally() {
+        tauri::async_runtime::block_on(async {
+            let database = Database::in_memory().await.expect("database should open");
+            let old_path = "C:\\Music\\before.flac";
+            let new_path = "C:\\Music\\after.flac";
+            let old_track = sample_track(old_path, "before.flac");
+            database
+                .persist_folder_scan("C:\\Music", "test", std::slice::from_ref(&old_track))
+                .await
+                .expect("folder scan should persist");
+            let mut renamed_track = old_track.clone();
+            renamed_track.id = new_path.to_string();
+            renamed_track.path = new_path.to_string();
+            renamed_track.file_name = "after.flac".to_string();
+            database
+                .update_renamed_track_summary(old_path, &renamed_track)
+                .await
+                .expect("renamed path should be migrated");
+
+            let tracks = database.load_tracks().await.expect("tracks should load");
+            assert_eq!(tracks.len(), 1);
+            assert_eq!(tracks[0].path, new_path);
+            assert_eq!(tracks[0].file_name, "after.flac");
+            assert!(database
+                .update_renamed_track_summary(old_path, &renamed_track)
+                .await
+                .is_err());
+        });
+    }
+
+    fn sample_track(path: &str, file_name: &str) -> AudioTrack {
+        AudioTrack {
+            id: path.to_string(),
+            path: path.to_string(),
+            file_name: file_name.to_string(),
+            title: "Title".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            album_artist: "Album Artist".to_string(),
+            genre: "Pop".to_string(),
+            language: String::new(),
+            composer: String::new(),
+            lyricist: String::new(),
+            copyright: String::new(),
+            rating: None,
+            comment: String::new(),
+            lyrics: String::new(),
+            track_number: Some(1),
+            disc_number: Some(1),
+            year: "2026".to_string(),
+            duration_seconds: 1,
+            format: "FLAC".to_string(),
+            bitrate: None,
+            sample_rate: None,
+            channels: None,
+            cover_data_url: None,
+            has_lyrics: false,
+            has_cover: false,
+            replay_gain_track_gain: String::new(),
+            replay_gain_track_peak: String::new(),
+            replay_gain_album_gain: String::new(),
+            replay_gain_album_peak: String::new(),
+            replay_gain_reference_loudness: String::new(),
+        }
     }
 }

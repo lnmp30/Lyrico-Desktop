@@ -2,11 +2,12 @@ import { CustomerServiceOutlined } from "@ant-design/icons";
 import { Avatar } from "antd";
 import { useEffect, useRef, useState } from "react";
 import type { AudioTrack } from "../app/types";
+import { useImageDimensions } from "../hooks/useImageDimensions";
 import { useTrackCover } from "../hooks/useTrackCovers";
 
 type ArtworkTrack = Pick<AudioTrack, "coverDataUrl"> & Partial<Pick<AudioTrack, "path" | "hasCover">>;
 
-export function TrackArtwork({ track, size }: { track?: ArtworkTrack; size: number }) {
+export function TrackArtwork({ track, size, showDimensions = false }: { track?: ArtworkTrack; size: number; showDimensions?: boolean }) {
   const containerRef = useRef<HTMLSpanElement>(null);
   const [nearViewport, setNearViewport] = useState(false);
   useEffect(() => {
@@ -30,9 +31,15 @@ export function TrackArtwork({ track, size }: { track?: ArtworkTrack; size: numb
   }, [nearViewport, track?.coverDataUrl, track?.hasCover, track?.path]);
   const lazyCover = useTrackCover(track?.path, nearViewport && Boolean(track?.hasCover));
   const coverDataUrl = track?.coverDataUrl ?? lazyCover;
+  const dimensions = useImageDimensions(showDimensions ? coverDataUrl : undefined);
 
   if (coverDataUrl) {
-    return <span ref={containerRef}><Avatar shape="square" src={coverDataUrl} size={size} className="artwork" /></span>;
+    return (
+      <span ref={containerRef} className="artwork-frame">
+        <Avatar shape="square" src={coverDataUrl} size={size} className="artwork" />
+        {dimensions ? <span className="cover-dimensions">{dimensions.width} × {dimensions.height}</span> : null}
+      </span>
+    );
   }
 
   return (

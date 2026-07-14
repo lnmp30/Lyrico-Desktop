@@ -10,6 +10,7 @@ import {
   loadArtistSplitConfig,
   loadLibraryTrack,
   loadLibraryTracks,
+  loadBatchTaskItems,
   readAudioFile,
   readImageFile,
   readTextFile,
@@ -51,7 +52,7 @@ import { PluginsPage } from "../pages/PluginsPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { SongsPage } from "../pages/SongsPage";
 import { TasksPage } from "../pages/TasksPage";
-import type { ArtistSplitConfig, AudioTrack, BatchTask, DesktopSettings, LibraryFolder, ScanProgress, SourcePlugin, TagForm, ViewKey } from "./types";
+import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, DesktopSettings, LibraryFolder, ScanProgress, SourcePlugin, TagForm, ViewKey } from "./types";
 import { getReplayGainProgress, publishReplayGainProgress } from "../hooks/useReplayGainProgress";
 import "../App.css";
 
@@ -168,9 +169,18 @@ function LyricoDesktop() {
     let unlisten: UnlistenFn | undefined;
     void listen<BatchTask>("batch-task-updated", ({ payload }) => {
       if (!disposed && ["succeeded", "failed", "cancelled"].includes(payload.status)) {
-        void loadLibraryTracks().then((nextTracks) => {
-          if (!disposed) setTracks(nextTracks);
-        });
+        void Promise.all([
+          loadLibraryTracks(),
+          payload.taskType === "renameFiles" ? loadBatchTaskItems(payload.taskId) : Promise.resolve([]),
+        ]).then(([nextTracks, items]) => {
+          if (disposed) return;
+          setTracks(nextTracks);
+          const renamedPaths = renamePathMap(items);
+          if (renamedPaths.size === 0) return;
+          setSelectedPath((current) => current ? renamedPaths.get(normalizePath(current)) ?? current : current);
+          setSelectedPaths((current) => current.map((path) => renamedPaths.get(normalizePath(path)) ?? path));
+          setDetailTrack((current) => current && renamedPaths.has(normalizePath(current.path)) ? undefined : current);
+        }).catch(() => undefined);
       }
     }).then((dispose) => {
       if (disposed) dispose();
@@ -742,6 +752,20 @@ function LyricoDesktop() {
 function upsertFolder(folders: LibraryFolder[], folder: LibraryFolder) {
   const rest = folders.filter((candidate) => !samePath(candidate.path, folder.path));
   return [...rest, folder].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function renamePathMap(items: BatchTaskItem[]) {
+  const paths = new Map<string, string>();
+  for (const item of items) {
+    if (item.status !== "succeeded" || !item.resultJson) continue;
+    try {
+      const result = JSON.parse(item.resultJson) as { originalPath?: string; newPath?: string };
+      if (result.originalPath && result.newPath) paths.set(normalizePath(result.originalPath), result.newPath);
+    } catch {
+      // Ignore malformed historical task results and keep the current selection unchanged.
+    }
+  }
+  return paths;
 }
 
 function mergeFolderTracks(current: AudioTrack[], folderTracks: AudioTrack[], folderPath: string) {

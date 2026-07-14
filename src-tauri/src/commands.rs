@@ -2,6 +2,7 @@ use crate::audio::{
     is_audio_path, read_cover_thumbnail, read_image_data_url, read_track, save_tags,
     write_image_data_url, ArtworkMode,
 };
+use crate::batch::{generate_rename_previews, CharacterMappingRule, RenamePreview};
 use crate::config as app_config;
 use crate::config::DesktopSettings;
 use crate::database::IndexedTrack;
@@ -191,6 +192,26 @@ pub(crate) async fn load_batch_task_items(
     task_id: String,
 ) -> Result<Vec<BatchTaskItem>, String> {
     state.database.load_batch_task_items(&task_id).await
+}
+
+#[tauri::command]
+pub(crate) async fn preview_batch_rename(
+    app: AppHandle,
+    paths: Vec<String>,
+    rename_format: String,
+    character_mapping_rules: Vec<CharacterMappingRule>,
+) -> Result<Vec<RenamePreview>, String> {
+    let artist_separator = app_config::load_artist_split_config(&app)?.artist_separator;
+    tauri::async_runtime::spawn_blocking(move || {
+        generate_rename_previews(
+            &paths,
+            &rename_format,
+            &character_mapping_rules,
+            &artist_separator,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

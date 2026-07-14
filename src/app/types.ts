@@ -238,6 +238,21 @@ export type BatchTaskItem = {
   updatedAt: string;
 };
 
+export type CharacterMappingRule = {
+  id: string;
+  name: string;
+  charMappings: Record<string, string | null>;
+  description: string;
+  isBuiltIn: boolean;
+  isEnabled: boolean;
+};
+
+export type RenamePreview = {
+  originalPath: string;
+  newPath: string;
+  conflict: boolean;
+};
+
 export type CustomArtistSeparator = {
   id: string;
   value: string;

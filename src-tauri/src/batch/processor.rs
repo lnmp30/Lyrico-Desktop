@@ -19,6 +19,7 @@ pub(super) struct ProcessContext<'a> {
 pub(super) struct ProcessOutcome {
     pub(super) result_json: Option<String>,
     pub(super) updated_track: Option<AudioTrack>,
+    pub(super) previous_track_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -38,8 +39,10 @@ pub(super) trait BatchProcessor: Send + Sync {
 
 pub(super) fn processor_for(task_type: &str) -> Result<Box<dyn BatchProcessor>, String> {
     match task_type {
+        "editTags" => Ok(Box::new(super::edit::EditTagsProcessor)),
         "matchMetadata" => Ok(Box::new(super::metadata::MatchMetadataProcessor)),
         "formatLyrics" => Ok(Box::new(super::lyrics::LyricsFormatProcessor)),
+        "renameFiles" => Ok(Box::new(super::rename::RenameFilesProcessor)),
         "replayGain" => Ok(Box::new(ReplayGainProcessor)),
         other => Err(format!("No Rust batch processor is registered for {other}")),
     }
@@ -125,6 +128,7 @@ impl BatchProcessor for ReplayGainProcessor {
                 .to_string(),
             ),
             updated_track: Some(updated),
+            previous_track_path: None,
         })
     }
 }

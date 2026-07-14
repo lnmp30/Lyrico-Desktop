@@ -16,11 +16,11 @@ use commands::{
     create_batch_task, fetch_remote_image, get_storage_info, install_source_plugin_archive,
     invoke_source_plugin, load_artist_split_config, load_batch_task_items, load_batch_tasks,
     load_desktop_settings, load_library_folders, load_library_track, load_library_tracks,
-    load_source_plugins, load_track_covers, read_audio_file, read_image_file, read_text_file,
-    remove_library_folder, retry_failed_batch_items, save_artist_split_config, save_audio_tags,
-    save_desktop_settings, save_source_plugin_settings, scan_folder, set_source_plugin_enabled,
-    start_batch_task, uninstall_source_plugin, upsert_library_folder, write_image_file,
-    write_text_file,
+    load_source_plugins, load_track_covers, preview_batch_rename, read_audio_file, read_image_file,
+    read_text_file, remove_library_folder, retry_failed_batch_items, save_artist_split_config,
+    save_audio_tags, save_desktop_settings, save_source_plugin_settings, scan_folder,
+    set_source_plugin_enabled, start_batch_task, uninstall_source_plugin, upsert_library_folder,
+    write_image_file, write_text_file,
 };
 use database::Database;
 use lyrics_commands::{
@@ -88,6 +88,7 @@ pub fn run() {
             create_batch_task,
             load_batch_tasks,
             load_batch_task_items,
+            preview_batch_rename,
             start_batch_task,
             cancel_batch_task,
             cancel_batch_task_item,

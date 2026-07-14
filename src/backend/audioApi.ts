@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, DesktopSettings, LibraryFolder, PluginInstallResult, ReplayGainAnalysis, SourcePlugin, StorageInfo, TagForm } from "../app/types";
+import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, CharacterMappingRule, DesktopSettings, LibraryFolder, PluginInstallResult, RenamePreview, ReplayGainAnalysis, SourcePlugin, StorageInfo, TagForm } from "../app/types";
 
 export async function scanFolder(folderPath: string) {
   return invoke<AudioTrack[]>("scan_folder", { folderPath });
@@ -101,6 +101,10 @@ export async function loadBatchTasks() {
 
 export async function loadBatchTaskItems(taskId: string) {
   return invoke<BatchTaskItem[]>("load_batch_task_items", { taskId });
+}
+
+export async function previewBatchRename(paths: string[], renameFormat: string, characterMappingRules: CharacterMappingRule[]) {
+  return invoke<RenamePreview[]>("preview_batch_rename", { paths, renameFormat, characterMappingRules });
 }
 
 export async function startBatchTask(taskId: string) {
