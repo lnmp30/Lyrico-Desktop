@@ -2,14 +2,13 @@ import { ReloadOutlined, SaveOutlined, SearchOutlined } from "@ant-design/icons"
 import { Alert, Avatar, Button, Checkbox, Collapse, Descriptions, Drawer, Empty, Flex, Form, Input, InputNumber, List, Modal, Progress, Rate, Segmented, Select, Space, Spin, Tabs, Typography } from "antd";
 import type { FormInstance } from "antd";
 import type { TFunction } from "i18next";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, DesktopSettings, PluginSongResult, ReplayGainProgress, SourcePlugin, TagForm } from "../app/types";
 import { fetchRemoteImage, invokeSourcePlugin } from "../backend/audioApi";
+import { extractPlainLyricsText, LYRIC_FORMATS, preferredPluginLyricFormat, processLyricsText, renderPluginLyrics, type LyricFormat } from "../backend/lyricsApi";
 import { formatDuration } from "../utils/format";
 import { TrackArtwork } from "./TrackArtwork";
-import { plainLyricsText, removeEmptyLyricsLines, shiftLyricsOffset } from "../domain/lyrics";
-import { LYRIC_FORMATS, preferredPluginLyricFormat, renderPluginLyrics, type LyricFormat } from "../domain/pluginLyrics";
 import { useReplayGainProgress } from "../hooks/useReplayGainProgress";
 
 const { Text } = Typography;
@@ -167,14 +166,21 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
   const [lyricsReview, setLyricsReview] = useState<string>();
   const [lyricsPayload, setLyricsPayload] = useState<unknown>();
   const [lyricsFormat, setLyricsFormat] = useState<LyricFormat>("verbatimLrc");
+  const [lyricsFormatting, setLyricsFormatting] = useState(false);
+  const lyricsFormatRequest = useRef(0);
   const [busyResult, setBusyResult] = useState<string>();
   const visibleResults = useMemo(() => resultTab === "all" ? results : results.filter((entry) => entry.pluginId === resultTab), [resultTab, results]);
 
   useEffect(() => {
+    lyricsFormatRequest.current += 1;
     setKeyword(`${track.title} ${track.artist}`.trim());
     setResults([]);
     setResultTab("all");
     setError(undefined);
+    setBusyResult(undefined);
+    setLyricsReview(undefined);
+    setLyricsPayload(undefined);
+    setLyricsFormatting(false);
   }, [track.path, track.title, track.artist]);
 
   async function search() {
@@ -265,6 +271,7 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
     const { result } = entry;
     const plugin = availablePlugins.find((candidate) => candidate.id === entry.pluginId);
     if (!plugin?.capabilities.includes("getLyrics")) return;
+    const request = ++lyricsFormatRequest.current;
     setBusyResult(`lyrics:${entry.pluginId}:${resultId(result)}`);
     setError(undefined);
     try {
@@ -272,16 +279,18 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
         song: { ...result, sourceId: plugin.id, pluginId: plugin.id },
         config: plugin.config,
       });
+      if (request !== lyricsFormatRequest.current) return;
       const format = settings.lyricFormat ?? preferredPluginLyricFormat(lyrics);
-      const text = format ? formatPluginLyrics(lyrics, format, settings) : "";
+      const text = format ? await formatPluginLyrics(lyrics, format, settings) : "";
+      if (request !== lyricsFormatRequest.current) return;
       if (!text) throw new Error(t("details.lyricsNotFound"));
       setLyricsPayload(lyrics);
       setLyricsFormat(format);
       setLyricsReview(text);
     } catch (nextError) {
-      setError(String(nextError));
+      if (request === lyricsFormatRequest.current) setError(String(nextError));
     } finally {
-      setBusyResult(undefined);
+      if (request === lyricsFormatRequest.current) setBusyResult(undefined);
     }
   }
 
@@ -291,6 +300,22 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
     setLyricsReview(undefined);
     setLyricsPayload(undefined);
     onApplied();
+  }
+
+  async function updateLyricsReviewFormat(format: LyricFormat) {
+    const request = ++lyricsFormatRequest.current;
+    setLyricsFormat(format);
+    setLyricsFormatting(true);
+    setError(undefined);
+    try {
+      const text = await formatPluginLyrics(lyricsPayload, format, settings);
+      if (!text) throw new Error(t("details.lyricsNotFound"));
+      if (request === lyricsFormatRequest.current) setLyricsReview(text);
+    } catch (nextError) {
+      if (request === lyricsFormatRequest.current) setError(String(nextError));
+    } finally {
+      if (request === lyricsFormatRequest.current) setLyricsFormatting(false);
+    }
   }
 
   if (!availablePlugins.length) {
@@ -415,20 +440,20 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
         open={lyricsReview != null}
         width={720}
         okText={t("details.confirmLyrics")}
+        okButtonProps={{ disabled: lyricsFormatting || Boolean(error) }}
         onOk={confirmLyricsReview}
-        onCancel={() => { setLyricsReview(undefined); setLyricsPayload(undefined); setError(undefined); }}
+        onCancel={() => { lyricsFormatRequest.current += 1; setLyricsFormatting(false); setLyricsReview(undefined); setLyricsPayload(undefined); setError(undefined); }}
       >
         <Space orientation="vertical" size={12} className="full-width">
+          {error ? <Alert type="error" showIcon closable message={error} onClose={() => setError(undefined)} /> : null}
           <Select
             value={lyricsFormat}
+            loading={lyricsFormatting}
             className="full-width"
             options={LYRIC_FORMATS.map((format) => ({ value: format, label: t(`lyrics.formats.${format}`) }))}
-            onChange={(format: LyricFormat) => {
-              setLyricsFormat(format);
-              setLyricsReview(formatPluginLyrics(lyricsPayload, format, settings));
-            }}
+            onChange={(format: LyricFormat) => void updateLyricsReviewFormat(format)}
           />
-          <Input.TextArea value={lyricsReview} onChange={(event) => setLyricsReview(event.target.value)} autoSize={{ minRows: 14, maxRows: 24 }} />
+          <Input.TextArea disabled={lyricsFormatting} value={lyricsReview} onChange={(event) => { setLyricsReview(event.target.value); setError(undefined); }} autoSize={{ minRows: 14, maxRows: 24 }} />
         </Space>
       </Modal>
     </Space>
@@ -550,14 +575,15 @@ function isEmptyTagValue(value: unknown) {
   return value == null || (typeof value === "string" && !value.trim()) || (Array.isArray(value) && value.length === 0);
 }
 
-function formatPluginLyrics(result: unknown, format: LyricFormat, settings: DesktopSettings) {
-  return renderPluginLyrics(result, format, {
+async function formatPluginLyrics(result: unknown, format: LyricFormat, settings: DesktopSettings) {
+  const rendered = await renderPluginLyrics(result, format, {
     showTranslation: settings.showTranslation,
     showRomanization: settings.showRomanization,
     onlyTranslationIfAvailable: settings.onlyTranslationIfAvailable,
     removeEmptyLines: settings.removeEmptyLyricLines,
     conversionMode: settings.lyricsConversionMode,
   });
+  return rendered.text;
 }
 
 function tagFieldLabel(key: keyof TagForm, t: TFunction) {
@@ -576,7 +602,48 @@ function tagFieldLabel(key: keyof TagForm, t: TFunction) {
 function LocalTagEditor({ form, replayGainProgress, onCalculateReplayGain, onCancelReplayGain, onImportLyrics, onExportLyrics }: { form: FormInstance<TagForm>; replayGainProgress?: ReplayGainProgress; onCalculateReplayGain: () => void; onCancelReplayGain: () => void; onImportLyrics: () => void; onExportLyrics: () => void }) {
   const { t } = useTranslation();
   const [plainLyricsOpen, setPlainLyricsOpen] = useState(false);
+  const [plainLyrics, setPlainLyrics] = useState("");
+  const [lyricsProcessingAction, setLyricsProcessingAction] = useState<number | "removeEmpty" | "plain">();
+  const [lyricsError, setLyricsError] = useState<string>();
+  const lyricsProcessRequest = useRef(0);
   const currentLyrics = Form.useWatch("lyrics", form) ?? "";
+  const lyricsProcessing = lyricsProcessingAction != null;
+
+  useEffect(() => {
+    lyricsProcessRequest.current += 1;
+    setLyricsProcessingAction(undefined);
+  }, [currentLyrics]);
+
+  async function transformLyrics(options: { offsetMs?: number; removeEmptyLines?: boolean }, action: number | "removeEmpty") {
+    const request = ++lyricsProcessRequest.current;
+    setLyricsProcessingAction(action);
+    setLyricsError(undefined);
+    try {
+      const result = await processLyricsText(currentLyrics, options);
+      if (request === lyricsProcessRequest.current) form.setFieldValue("lyrics", result.text);
+    } catch (error) {
+      if (request === lyricsProcessRequest.current) setLyricsError(String(error));
+    } finally {
+      if (request === lyricsProcessRequest.current) setLyricsProcessingAction(undefined);
+    }
+  }
+
+  async function openPlainLyrics() {
+    const request = ++lyricsProcessRequest.current;
+    setLyricsProcessingAction("plain");
+    setLyricsError(undefined);
+    try {
+      const text = await extractPlainLyricsText(currentLyrics);
+      if (request === lyricsProcessRequest.current) {
+        setPlainLyrics(text);
+        setPlainLyricsOpen(true);
+      }
+    } catch (error) {
+      if (request === lyricsProcessRequest.current) setLyricsError(String(error));
+    } finally {
+      if (request === lyricsProcessRequest.current) setLyricsProcessingAction(undefined);
+    }
+  }
   return (
     <>
     <Form form={form} layout="vertical" requiredMark={false} className="tag-form">
@@ -649,16 +716,17 @@ function LocalTagEditor({ form, replayGainProgress, onCalculateReplayGain, onCan
             key: "lyrics",
             label: t("details.groups.lyrics"),
             children: <>
+              {lyricsError ? <Alert type="error" showIcon closable message={lyricsError} onClose={() => setLyricsError(undefined)} /> : null}
               <Space wrap className="lyrics-actions">
-                <Button onClick={onImportLyrics}>{t("lyrics.import")}</Button>
-                <Button disabled={!currentLyrics.trim()} onClick={onExportLyrics}>{t("lyrics.export")}</Button>
+                <Button disabled={lyricsProcessing} onClick={onImportLyrics}>{t("lyrics.import")}</Button>
+                <Button disabled={!currentLyrics.trim() || lyricsProcessing} onClick={onExportLyrics}>{t("lyrics.export")}</Button>
                 {[-500, -100, 100, 500].map((offset) => (
-                  <Button key={offset} disabled={!currentLyrics.trim()} onClick={() => form.setFieldValue("lyrics", shiftLyricsOffset(currentLyrics, offset))}>
+                  <Button key={offset} loading={lyricsProcessingAction === offset} disabled={!currentLyrics.trim() || lyricsProcessing} onClick={() => void transformLyrics({ offsetMs: offset }, offset)}>
                     {offset > 0 ? `+${offset} ms` : `${offset} ms`}
                   </Button>
                 ))}
-                <Button disabled={!currentLyrics.trim()} onClick={() => form.setFieldValue("lyrics", removeEmptyLyricsLines(currentLyrics))}>{t("lyrics.removeEmpty")}</Button>
-                <Button disabled={!currentLyrics.trim()} onClick={() => setPlainLyricsOpen(true)}>{t("lyrics.plainText")}</Button>
+                <Button loading={lyricsProcessingAction === "removeEmpty"} disabled={!currentLyrics.trim() || lyricsProcessing} onClick={() => void transformLyrics({ removeEmptyLines: true }, "removeEmpty")}>{t("lyrics.removeEmpty")}</Button>
+                <Button loading={lyricsProcessingAction === "plain"} disabled={!currentLyrics.trim() || lyricsProcessing} onClick={() => void openPlainLyrics()}>{t("lyrics.plainText")}</Button>
               </Space>
               <Form.Item name="lyrics" label={t("details.lyrics")}><Input.TextArea autoSize={{ minRows: 8, maxRows: 18 }} /></Form.Item>
             </>,
@@ -672,7 +740,7 @@ function LocalTagEditor({ form, replayGainProgress, onCalculateReplayGain, onCan
       />
     </Form>
     <Modal title={t("lyrics.plainText")} open={plainLyricsOpen} footer={null} onCancel={() => setPlainLyricsOpen(false)}>
-      <Input.TextArea value={plainLyricsText(currentLyrics)} readOnly autoSize={{ minRows: 10, maxRows: 20 }} />
+      <Input.TextArea value={plainLyrics} readOnly autoSize={{ minRows: 10, maxRows: 20 }} />
     </Modal>
     </>
   );

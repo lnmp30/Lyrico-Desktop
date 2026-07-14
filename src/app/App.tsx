@@ -36,7 +36,7 @@ import { AppContextMenu } from "../components/AppContextMenu";
 import { SongDetails } from "../components/SongDetails";
 import { defaultArtistSplitConfig, filterTracks, groupAlbums, groupArtists } from "../domain/library";
 import { completeTagForm, splitGenreValues } from "../domain/tagForm";
-import { lyricsExportExtension } from "../domain/lyrics";
+import { detectLyricsFormat } from "../backend/lyricsApi";
 import { updateCachedCover } from "../hooks/useTrackCovers";
 import {
   getLanguagePreference,
@@ -446,15 +446,15 @@ function LyricoDesktop() {
       message.warning(t("lyrics.empty"));
       return;
     }
-    const extension = lyricsExportExtension(lyrics);
-    const baseName = selectedTrack.fileName.replace(/\.[^.]+$/, "");
-    const destination = await save({
-      title: t("lyrics.export"),
-      defaultPath: `${baseName}.${extension}`,
-      filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
-    });
-    if (!destination) return;
     try {
+      const extension = await detectLyricsFormat(lyrics) === "ttml" ? "ttml" : "lrc";
+      const baseName = selectedTrack.fileName.replace(/\.[^.]+$/, "");
+      const destination = await save({
+        title: t("lyrics.export"),
+        defaultPath: `${baseName}.${extension}`,
+        filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
+      });
+      if (!destination) return;
       await writeTextFile(destination, lyrics);
       message.success(t("messages.lyricsExported"));
     } catch (error) {

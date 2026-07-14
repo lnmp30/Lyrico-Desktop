@@ -3,6 +3,8 @@ mod batch;
 mod commands;
 mod config;
 mod database;
+mod lyrics;
+mod lyrics_commands;
 mod models;
 mod paths;
 mod plugins;
@@ -21,6 +23,9 @@ use commands::{
     write_text_file,
 };
 use database::Database;
+use lyrics_commands::{
+    detect_lyrics_format, extract_plain_lyrics_text, process_lyrics_text, render_plugin_lyrics,
+};
 use paths::resolve_data_paths;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
@@ -93,7 +98,11 @@ pub fn run() {
             save_source_plugin_settings,
             uninstall_source_plugin,
             invoke_source_plugin,
-            fetch_remote_image
+            fetch_remote_image,
+            process_lyrics_text,
+            render_plugin_lyrics,
+            extract_plain_lyrics_text,
+            detect_lyrics_format
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

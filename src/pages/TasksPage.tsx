@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import type { AudioTrack, BatchTask, DesktopSettings, SourcePlugin } from "../app/types";
 import { cancelBatchTask, createBatchTask, loadBatchTasks, startBatchTask } from "../backend/audioApi";
 import { TrackArtwork } from "../components/TrackArtwork";
-import { LYRIC_FORMATS, type LyricFormat } from "../domain/pluginLyrics";
+import { LYRIC_FORMATS, type LyricFormat } from "../backend/lyricsApi";
 
 const { Title, Text } = Typography;
 

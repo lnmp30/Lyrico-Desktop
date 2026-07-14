@@ -1,21 +1,16 @@
 use super::processor::{BatchProcessor, ProcessContext, ProcessError, ProcessOutcome};
 use crate::audio::{read_track, write_lyrics_tag, ArtworkMode};
-use rquickjs::{Context, Function, Runtime};
-use serde::{Deserialize, Serialize};
+use crate::lyrics::{self, LyricFormat, LyricsOptions, LyricsPipelineResult};
+use serde::{de::Error as _, Deserialize, Deserializer};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
 
-const LYRICS_RUNTIME: &str = include_str!("lyrics_runtime.js");
-const MEMORY_LIMIT: usize = 128 * 1024 * 1024;
-const STACK_LIMIT: usize = 2 * 1024 * 1024;
-const TIMEOUT: Duration = Duration::from_secs(10);
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LyricsFormatConfig {
-    target_format: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_format")]
+    target_format: Option<LyricFormat>,
     #[serde(default = "default_concurrency")]
     concurrency: usize,
     #[serde(default = "default_true")]
@@ -26,15 +21,6 @@ struct LyricsFormatConfig {
     tag_line_keywords: Vec<String>,
     #[serde(default)]
     remove_empty_lines: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct LyricsPipelineResult {
-    pub(super) text: String,
-    warnings: Vec<String>,
-    source_format: Option<String>,
-    target_format: String,
 }
 
 pub(super) struct LyricsFormatProcessor;
@@ -95,16 +81,21 @@ fn default_true() -> bool {
     true
 }
 
+fn deserialize_optional_format<'de, D>(deserializer: D) -> Result<Option<LyricFormat>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?
+        .as_deref()
+        .map(normalize_format)
+        .transpose()
+        .map_err(D::Error::custom)
+}
+
 fn parse_config(config_json: Option<&str>) -> Result<LyricsFormatConfig, ProcessError> {
     let raw = config_json.ok_or_else(|| ProcessError::Skipped("No config".to_string()))?;
     let mut config: LyricsFormatConfig = serde_json::from_str(raw)
         .map_err(|error| ProcessError::Failed(format!("Invalid lyrics format config: {error}")))?;
-    config.target_format = config
-        .target_format
-        .as_deref()
-        .map(normalize_format)
-        .transpose()
-        .map_err(ProcessError::Failed)?;
     config.concurrency = config.concurrency.clamp(1, 5);
     config.tag_line_keywords = config
         .tag_line_keywords
@@ -125,12 +116,12 @@ fn parse_config(config_json: Option<&str>) -> Result<LyricsFormatConfig, Process
     Ok(config)
 }
 
-fn normalize_format(value: &str) -> Result<String, String> {
+fn normalize_format(value: &str) -> Result<LyricFormat, String> {
     match value {
-        "plainLrc" | "PLAIN_LRC" => Ok("plainLrc".to_string()),
-        "verbatimLrc" | "VERBATIM_LRC" => Ok("verbatimLrc".to_string()),
-        "enhancedLrc" | "ENHANCED_LRC" => Ok("enhancedLrc".to_string()),
-        "ttml" | "TTML" => Ok("ttml".to_string()),
+        "plainLrc" | "PLAIN_LRC" => Ok(LyricFormat::PlainLrc),
+        "verbatimLrc" | "VERBATIM_LRC" => Ok(LyricFormat::VerbatimLrc),
+        "enhancedLrc" | "ENHANCED_LRC" => Ok(LyricFormat::EnhancedLrc),
+        "ttml" | "TTML" => Ok(LyricFormat::Ttml),
         other => Err(format!("Unsupported lyrics format: {other}")),
     }
 }
@@ -139,12 +130,19 @@ fn process_lyrics(
     lyrics: &str,
     config: &LyricsFormatConfig,
 ) -> Result<LyricsPipelineResult, String> {
-    run_runtime(
-        "__lyricoProcessBatchLyrics",
-        json!({
-            "lyrics": lyrics,
-            "config": config,
-        }),
+    lyrics::process_text(
+        lyrics,
+        &LyricsOptions {
+            target_format: config.target_format,
+            force_rewrite: config.format_line_order,
+            remove_tag_line_keywords: if config.remove_tag_lines {
+                config.tag_line_keywords.clone()
+            } else {
+                Vec::new()
+            },
+            remove_empty_lines: config.remove_empty_lines,
+            ..LyricsOptions::default()
+        },
     )
 }
 
@@ -153,58 +151,10 @@ pub(super) fn render_plugin_lyrics(
     target_format: &str,
     options: Value,
 ) -> Result<LyricsPipelineResult, String> {
-    run_runtime(
-        "__lyricoRenderPluginLyrics",
-        json!({
-            "result": result,
-            "targetFormat": target_format,
-            "options": options,
-        }),
-    )
-}
-
-fn run_runtime(entry_point: &str, request: Value) -> Result<LyricsPipelineResult, String> {
-    let runtime = Runtime::new().map_err(|error| error.to_string())?;
-    runtime.set_memory_limit(MEMORY_LIMIT);
-    runtime.set_max_stack_size(STACK_LIMIT);
-    let started = Instant::now();
-    runtime.set_interrupt_handler(Some(Box::new(move || started.elapsed() >= TIMEOUT)));
-    let context = Context::full(&runtime).map_err(|error| error.to_string())?;
-    context.with(|ctx| {
-        ctx.eval::<(), _>(LYRICS_RUNTIME.as_bytes())
-            .map_err(|error| format_js_error(&ctx, error))?;
-        let function: Function = ctx
-            .globals()
-            .get(entry_point)
-            .map_err(|_| "Lyrics runtime entry point is missing".to_string())?;
-        let request_json = serde_json::to_string(&request).map_err(|error| error.to_string())?;
-        let request = ctx
-            .json_parse(request_json)
-            .map_err(|error| format_js_error(&ctx, error))?;
-        let output = function
-            .call::<_, rquickjs::Value>((request,))
-            .map_err(|error| format_js_error(&ctx, error))?;
-        let output = ctx
-            .json_stringify(output)
-            .map_err(|error| format_js_error(&ctx, error))?
-            .ok_or_else(|| "Lyrics runtime returned no result".to_string())?;
-        serde_json::from_str(
-            output
-                .to_string()
-                .map_err(|error| error.to_string())?
-                .as_str(),
-        )
-        .map_err(|error| error.to_string())
-    })
-}
-
-fn format_js_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> String {
-    if ctx.has_exception() {
-        let exception = ctx.catch();
-        format!("{error}: {exception:?}")
-    } else {
-        error.to_string()
-    }
+    let target_format = normalize_format(target_format)?;
+    let options: LyricsOptions =
+        serde_json::from_value(options).map_err(|error| error.to_string())?;
+    lyrics::process_plugin_result(result, target_format, &options)
 }
 
 #[cfg(test)]
@@ -213,7 +163,7 @@ mod tests {
 
     fn config(target_format: Option<&str>) -> LyricsFormatConfig {
         LyricsFormatConfig {
-            target_format: target_format.map(ToOwned::to_owned),
+            target_format: target_format.map(|value| normalize_format(value).unwrap()),
             concurrency: 3,
             format_line_order: true,
             remove_tag_lines: false,
@@ -223,21 +173,21 @@ mod tests {
     }
 
     #[test]
-    fn runtime_uses_the_shared_mobile_lyrics_pipeline() {
+    fn processor_uses_the_shared_mobile_lyrics_pipeline() {
         let raw = "[00:01.000]<00:01.000>故<00:01.500>事<00:02.000>";
-        let result = process_lyrics(raw, &config(Some("plainLrc"))).expect("runtime should run");
-        assert_eq!(result.source_format.as_deref(), Some("enhancedLrc"));
-        assert_eq!(result.target_format, "plainLrc");
+        let result = process_lyrics(raw, &config(Some("plainLrc"))).expect("pipeline should run");
+        assert_eq!(result.source_format, Some(LyricFormat::EnhancedLrc));
+        assert_eq!(result.target_format, LyricFormat::PlainLrc);
         assert!(result.text.contains("[00:01.000]故事"));
     }
 
     #[test]
-    fn runtime_filters_linked_ttml_tag_lines() {
+    fn processor_filters_linked_ttml_tag_lines() {
         let raw = r#"<?xml version="1.0"?><tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal"><head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal"><translations><translation><text for="L1">translation credit</text><text for="L2">译文</text></translation></translations></iTunesMetadata></metadata></head><body><div><p begin="1s" end="2s" itunes:key="L1">producer credit</p><p begin="2s" end="3s" itunes:key="L2">歌词</p></div></body></tt>"#;
         let mut config = config(Some("plainLrc"));
         config.remove_tag_lines = true;
         config.tag_line_keywords = vec!["credit".to_string()];
-        let result = process_lyrics(raw, &config).expect("runtime should run");
+        let result = process_lyrics(raw, &config).expect("pipeline should run");
         assert!(!result.text.contains("credit"));
         assert!(result.text.contains("歌词"));
         assert!(result.text.contains("译文"));
@@ -249,7 +199,7 @@ mod tests {
             r#"{"targetFormat":"VERBATIM_LRC","concurrency":9,"formatLineOrder":false}"#,
         ))
         .expect("mobile config should parse");
-        assert_eq!(parsed.target_format.as_deref(), Some("verbatimLrc"));
+        assert_eq!(parsed.target_format, Some(LyricFormat::VerbatimLrc));
         assert_eq!(parsed.concurrency, 5);
 
         assert!(matches!(
@@ -261,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_match_runtime_renders_plugin_lyrics_with_opencc() {
+    fn metadata_match_pipeline_renders_plugin_lyrics_with_opencc() {
         let result = render_plugin_lyrics(
             &json!({
                 "type":"structured",
