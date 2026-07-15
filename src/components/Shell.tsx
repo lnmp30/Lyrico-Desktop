@@ -11,7 +11,7 @@ import {
   TagsOutlined,
   TeamOutlined,
 } from "@ant-design/icons";
-import { Button, Drawer, Flex, Layout, Menu, Progress, Space, Table, Tooltip, Typography, type MenuProps, type TableColumnsType } from "antd";
+import { Badge, Button, Drawer, Flex, Layout, Menu, Progress, Table, Tooltip, Typography, type MenuProps, type TableColumnsType } from "antd";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, LibraryFolder, ReplayGainProgress, ScanProgress, ViewKey } from "../app/types";
@@ -68,63 +68,63 @@ export function Shell({
         { key: "tasks", icon: <CloudSyncOutlined />, label: t("common.tasks") },
       ],
     },
-    {
-      type: "group",
-      label: t("nav.system"),
-      children: [{ key: "settings", icon: <SettingOutlined />, label: t("common.settings") }],
-    },
   ];
 
   return (
     <Layout className="app-shell">
       <Sider
         className="side-panel"
-        width={220}
-        collapsedWidth={72}
+        width={244}
+        collapsedWidth={76}
         collapsed={collapsed}
         breakpoint="lg"
         trigger={null}
         onBreakpoint={setCollapsed}
       >
-        <div className="brand">
-          <div className="brand-icon">♪</div>
-          {!collapsed && <Text strong>Lyrico</Text>}
-        </div>
 
-        <Menu
-          mode="inline"
-          inlineCollapsed={collapsed}
-          selectedKeys={[activeView]}
-          items={navigationItems}
-          onSelect={({ key }) => onChangeView(key as ViewKey)}
-        />
+        <nav className="side-navigation" aria-label={t("nav.primary")}>
+          <Menu
+            mode="inline"
+            inlineCollapsed={collapsed}
+            selectedKeys={activeView === "settings" ? [] : [activeView]}
+            items={navigationItems}
+            onSelect={({ key }) => onChangeView(key as ViewKey)}
+          />
+        </nav>
 
         <div className="side-footer">
           {!collapsed && (
-            <Space orientation="vertical" size={0} className="library-summary">
-              <Text strong>{t("common.songCount", { count: trackCount })}</Text>
-              <Text type="secondary">{t("common.folderCount", { count: folders.length })}</Text>
-            </Space>
+            <div className="side-library-summary">
+              <Text type="secondary">{t("nav.librarySummary", { tracks: trackCount, folders: folders.length })}</Text>
+            </div>
           )}
-          <Tooltip title={t("selection.showSelected")} placement="right">
+          <Tooltip title={collapsed ? t("common.settings") : undefined} placement="right">
+            <Button
+              type="text"
+              aria-label={t("common.settings")}
+              className={`side-action-button side-settings-button${activeView === "settings" ? " is-active" : ""}`}
+              icon={<SettingOutlined />}
+              onClick={() => onChangeView("settings")}
+            >
+              {!collapsed && <span className="side-action-text">{t("common.settings")}</span>}
+            </Button>
+          </Tooltip>
+          <Tooltip title={collapsed ? t("selection.showSelected") : undefined} placement="right">
             <Button
               type="text"
               aria-label={t("selection.showSelected")}
               className="side-action-button side-selection-button"
               icon={
-                <span className="side-action-icon">
+                <Badge count={selectedTracks.length} size="small" overflowCount={99} color="#1677ff" offset={[5, -3]}>
                   <UnorderedListOutlined />
-                  {collapsed && selectedTracks.length > 0 && (
-                    <span className="side-collapsed-count">{formatSelectionCount(selectedTracks.length)}</span>
-                  )}
-                </span>
+                </Badge>
               }
               onClick={() => setSelectionDrawerOpen(true)}
             >
               {!collapsed && (
                 <span className="side-action-label">
                   <span className="side-action-text">{t("selection.selectedSongs")}</span>
-                  <span className="side-selection-count">{formatSelectionCount(selectedTracks.length)}</span>
+                  <Badge count={selectedTracks.length} showZero overflowCount={99} color="#1677ff" />
                 </span>
               )}
             </Button>
@@ -161,10 +161,6 @@ export function Shell({
       />
     </Layout>
   );
-}
-
-function formatSelectionCount(count: number) {
-  return count > 99 ? "99+" : String(count);
 }
 
 function SelectionDrawer({ open, tracks, onClose, onRemove, onClear, onOpenBatch }: { open: boolean; tracks: AudioTrack[]; onClose: () => void; onRemove: (path: string) => void; onClear: () => void; onOpenBatch: () => void }) {

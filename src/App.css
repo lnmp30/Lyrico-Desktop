@@ -72,36 +72,77 @@ textarea {
 }
 
 .brand {
-  height: 64px;
+  min-height: 76px;
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 12px;
-  padding-inline: 20px;
+  padding: 14px 18px;
 }
 
 .brand-icon {
-  width: 32px;
-  height: 32px;
-  display: grid;
+  width: 40px;
+  height: 40px;
+  display: block;
   flex: 0 0 auto;
-  place-items: center;
-  border-radius: 8px;
-  color: #fff;
-  font-weight: 700;
-  background: #1677ff;
+  border-radius: 10px;
 }
 
-.side-panel .ant-menu {
+.brand-copy {
+  min-width: 0;
+}
+
+.brand-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.brand-title {
+  font-size: 17px;
+}
+
+.brand-edition {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #1677ff;
+  background: #e6f4ff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+  text-transform: uppercase;
+}
+
+.brand-subtitle {
+  display: block;
+  max-width: 154px;
+  margin-top: 1px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-navigation {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+}
+
+.side-panel .ant-menu {
   border-inline-end: 0 !important;
 }
 
 .side-panel .ant-menu-item-group-title {
+  padding-top: 14px;
   font-size: 11px;
   letter-spacing: 0.06em;
+}
+
+.side-panel .ant-menu-item {
+  margin-inline: 10px;
+  width: calc(100% - 20px);
 }
 
 .side-panel.ant-layout-sider-collapsed .ant-menu-item-group-title {
@@ -113,9 +154,9 @@ textarea {
   flex: 0 0 auto;
   align-items: stretch;
   flex-direction: column;
-  gap: 8px;
-  margin: 8px 12px 12px;
-  padding: 12px 8px 0;
+  gap: 4px;
+  margin: 8px 10px 10px;
+  padding: 10px 0 0;
   border-top: 1px solid rgba(5, 5, 5, 0.06);
 }
 
@@ -125,7 +166,24 @@ textarea {
 
 .side-action-button {
   width: 100%;
+  height: 40px;
   justify-content: flex-start;
+  padding-inline: 14px;
+  border-radius: 8px;
+}
+
+.side-settings-button.is-active {
+  color: #1677ff;
+  background: #e6f4ff;
+}
+
+.side-library-summary {
+  min-width: 0;
+  padding: 0 14px 7px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .side-action-label {
@@ -144,43 +202,15 @@ textarea {
   white-space: nowrap;
 }
 
-.side-selection-count,
-.side-collapsed-count {
-  flex: none;
-  min-width: 20px;
-  padding: 0 6px;
-  border-radius: 10px;
-  background: #ff4d4f;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 18px;
-  text-align: center;
-}
-
-.side-action-icon {
-  position: relative;
-  display: inline-flex;
-}
-
-.side-collapsed-count {
-  position: absolute;
-  top: -9px;
-  left: 9px;
-  min-width: 16px;
-  padding: 0 4px;
-  font-size: 10px;
-  line-height: 16px;
-}
-
 .side-panel.ant-layout-sider-collapsed .side-action-button {
   width: 40px;
   padding-inline: 0;
   justify-content: center;
 }
 
-.library-summary {
-  min-width: 0;
+.side-panel.ant-layout-sider-collapsed .brand {
+  justify-content: center;
+  padding-inline: 0;
 }
 
 .page-search {

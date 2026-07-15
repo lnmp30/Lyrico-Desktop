@@ -34,6 +34,9 @@
     "library": "LIBRARY",
     "tools": "TOOLS",
     "system": "SYSTEM",
+    "primary": "Primary navigation",
+    "tagline": "Local music tag manager",
+    "librarySummary": "{{tracks}} songs · {{folders}} folders",
     "expand": "Expand sidebar",
     "collapse": "Collapse sidebar"
   },

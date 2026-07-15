@@ -369,6 +369,8 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 
 ### M5：导航、表格与扫描补全
 
+- [x] 重构 Shell 侧边栏：品牌、音乐库/工具分组、底部设置、已选歌曲与折叠状态形成稳定层级，并完成展开/收起/窄窗口验收。
+- [x] 使用桌面端真实能力重写 README，补齐定位、功能边界、插件、架构、构建、数据隐私、开发状态和设计参考。
 - [ ] 提取统一 `TrackItem`/`LibraryTable` 点击、双击、多选和键盘契约。
 - [ ] 艺术家详情增加“单曲 / 专辑”视图切换。
 - [ ] 歌曲页和专辑详情中的艺术家文本可点击。
@@ -385,6 +387,8 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 2026-07-14 M5 文件夹视图当前证据：旧页面的“根目录管理表 + 选中目录歌曲表”两张纵向大表已改为 list/details 工作区。第一轮设计对照 [Ant Design LLM 文档索引](https://ant.design/llms.txt)、[MusicBrainz Picard 主界面](https://picard-docs.musicbrainz.org/en/v2.13/getting_started/screen_main.html)、[Kid3 文件/目录列表](https://kid3.sourceforge.io/kid3_en.html)、[Windows list/details](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/list-details) 与 [BreadcrumbBar](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/breadcrumbbar)；第二轮按用户建议直接复用仓库内插件页面已经验证过的响应式 `Row/Col + 左列表 Card + 右详情 Card` 信息层级，不再把目录树和详情嵌入一个灰底大 Card。根目录和由歌曲路径推导出的有效子目录保留在左侧 `DirectoryTree`；右侧 Card 标题集中显示文件夹图标、名称、状态和根目录操作，正文用 `Breadcrumb` 保持位置上下文，并保留“包含子文件夹/仅当前文件夹”、局部搜索和歌曲表。移除操作只在选中根节点时显示，避免在子目录语境中误解为删除子目录。宽窗口两张 Card 并排、窄窗口沿用 Ant Design 栅格上下堆叠，不增加 viewport 高度计算或双重固定滚动区。目录树 2 项测试与完整前端 18 项测试、TypeScript 检查及 `git diff --check` 通过；内置浏览器连接状态仍不可用，真实页面层级、窄屏和长路径验收待补，所以清单保持未勾选。
 
 2026-07-15 M5 文件夹视图第二轮精简：根据真实窗口截图移除页面描述、右侧重复文件夹图标/名称/状态、正文再次出现的目录名、完整路径、歌曲总数和上次扫描时间；目录上下文只在 Card 标题的面包屑出现一次，完整路径退到悬浮提示。根目录扫描和移除保留为低强调图标操作，错误仅在真实存在时显示；范围、搜索和歌曲表成为正文唯一常驻内容。宽屏左树从 7/24 收窄到 5/24，右侧让出更多歌曲表空间，窄屏仍由 Ant `Row/Col` 堆叠。空状态和 720 px 窄屏实查通过；浏览器预览无 Tauri 数据桥接，填充真实目录后的长路径/多层树仍待原生窗口复验，因此清单不提前勾选。
+
+2026-07-15 M5 Shell 与项目说明：侧边栏从三组同权菜单改为“品牌区 + 音乐库/工具主导航 + 底部工作区”，使用项目真实图标，设置固定在底部并拥有独立选中态；已选歌曲继续位于折叠按钮上方，数量统一使用 Ant Design `Badge`，库统计压缩为单行。展开态、手动折叠、设置选中态和 720×760 自动折叠均已在本地页面实查，窄窗口 `bodyScrollWidth` 等于 720、侧栏 76、主区 644，无水平溢出。README 逐项对照桌面代码和移动端公开文档，参考 Picard/Kid3 的信息层级，明确 Windows/0.1.0 开发状态、当前扫描格式、插件函数、批处理范围、数据位置、构建测试命令及仓库暂未提供独立许可证的边界。最终验证为 `npm test` 24 项通过、`npm run build` 通过（仅既有主 chunk 大于 500 kB 警告）、`cargo test` 49 项通过且 2 项环境测试忽略、`cargo check`、`cargo fmt --check` 与 `git diff --check` 通过。
 
 ### M6：后端边界与回归保护
 

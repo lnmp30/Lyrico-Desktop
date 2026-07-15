@@ -29,6 +29,9 @@
     "library": "音乐库",
     "tools": "工具",
     "system": "系统",
+    "primary": "主导航",
+    "tagline": "本地音乐标签管理",
+    "librarySummary": "{{tracks}} 首歌曲 · {{folders}} 个文件夹",
     "expand": "展开侧栏",
     "collapse": "收起侧栏"
   },
