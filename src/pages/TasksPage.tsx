@@ -3,6 +3,7 @@ import {
   EditOutlined,
   ExportOutlined,
   FileTextOutlined,
+  FolderOpenOutlined,
   FormOutlined,
   SettingOutlined,
   TagsOutlined,
@@ -16,6 +17,7 @@ import type { AudioTrack, BatchTask, CharacterMappingRule, DesktopSettings, Rena
 import { cancelBatchTask, createBatchTask, loadBatchTasks, previewBatchRename, readImageFile, startBatchTask } from "../backend/audioApi";
 import { TrackArtwork } from "../components/TrackArtwork";
 import { LYRIC_FORMATS, type LyricFormat } from "../backend/lyricsApi";
+import { clearFinishedTask, currentActiveTask, isActiveTask, mergeBatchTaskSnapshot } from "../domain/batchTasks";
 
 const { Title, Text } = Typography;
 
@@ -101,7 +103,7 @@ const defaultTagLineKeywords = [
   "出品：", "出品:", "发行：", "发行:",
 ];
 
-const availableOperations = new Set<BatchOperation>(["metadata", "edit", "rename", "lyrics", "replaygain"]);
+const availableOperations = new Set<BatchOperation>(["metadata", "edit", "rename", "lyrics", "exportLyrics", "exportCover", "replaygain"]);
 
 const operationIcons: Record<BatchOperation, ReactNode> = {
   metadata: <TagsOutlined />,
@@ -113,7 +115,7 @@ const operationIcons: Record<BatchOperation, ReactNode> = {
   replaygain: <CalculatorOutlined />,
 };
 
-export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSeparator }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; selectedPaths: string[]; settings: DesktopSettings; artistSeparator: string }) {
+export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSeparator, onChangeSettings }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; selectedPaths: string[]; settings: DesktopSettings; artistSeparator: string; onChangeSettings: (settings: DesktopSettings) => void }) {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const [operation, setOperation] = useState<BatchOperation>("replaygain");
@@ -122,6 +124,8 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
   const [activeLyricsTask, setActiveLyricsTask] = useState<BatchTask>();
   const [activeMetadataTask, setActiveMetadataTask] = useState<BatchTask>();
   const [activeRenameTask, setActiveRenameTask] = useState<BatchTask>();
+  const [activeExportLyricsTask, setActiveExportLyricsTask] = useState<BatchTask>();
+  const [activeExportCoverTask, setActiveExportCoverTask] = useState<BatchTask>();
   const [submitting, setSubmitting] = useState(false);
   const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
   const selectedTracks = useMemo(() => tracks.filter((track) => selectedSet.has(track.path)), [selectedSet, tracks]);
@@ -131,6 +135,8 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
   const lyricsIsActive = isActiveTask(activeLyricsTask);
   const metadataIsActive = isActiveTask(activeMetadataTask);
   const renameIsActive = isActiveTask(activeRenameTask);
+  const exportLyricsIsActive = isActiveTask(activeExportLyricsTask);
+  const exportCoverIsActive = isActiveTask(activeExportCoverTask);
 
   useEffect(() => {
     let disposed = false;
@@ -142,11 +148,15 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
         const lyricsTasks = tasks.filter((task) => task.taskType === "formatLyrics");
         const metadataTasks = tasks.filter((task) => task.taskType === "matchMetadata");
         const renameTasks = tasks.filter((task) => task.taskType === "renameFiles");
-        setActiveReplayGainTask(currentOrLatestTask(replayGainTasks));
-        setActiveEditTask(currentOrLatestTask(editTasks));
-        setActiveLyricsTask(currentOrLatestTask(lyricsTasks));
-        setActiveMetadataTask(currentOrLatestTask(metadataTasks));
-        setActiveRenameTask(currentOrLatestTask(renameTasks));
+        const exportLyricsTasks = tasks.filter((task) => task.taskType === "exportLyrics");
+        const exportCoverTasks = tasks.filter((task) => task.taskType === "exportCover");
+        setActiveReplayGainTask(currentActiveTask(replayGainTasks));
+        setActiveEditTask(currentActiveTask(editTasks));
+        setActiveLyricsTask(currentActiveTask(lyricsTasks));
+        setActiveMetadataTask(currentActiveTask(metadataTasks));
+        setActiveRenameTask(currentActiveTask(renameTasks));
+        setActiveExportLyricsTask(currentActiveTask(exportLyricsTasks));
+        setActiveExportCoverTask(currentActiveTask(exportCoverTasks));
       })
       .catch((error) => message.error(String(error)));
     return () => {
@@ -160,12 +170,7 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
     void listen<BatchTask>("batch-task-updated", ({ payload }) => {
       if (disposed) return;
       const updateTask = (setTask: Dispatch<SetStateAction<BatchTask | undefined>>) => {
-        setTask((current) => {
-          if (!current || current.taskId === payload.taskId || payload.status === "queued" || payload.status === "running") {
-            return payload;
-          }
-          return current;
-        });
+        setTask((current) => mergeBatchTaskSnapshot(current, payload));
       };
       if (payload.taskType === "replayGain") {
         updateTask(setActiveReplayGainTask);
@@ -177,6 +182,10 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
         updateTask(setActiveMetadataTask);
       } else if (payload.taskType === "renameFiles") {
         updateTask(setActiveRenameTask);
+      } else if (payload.taskType === "exportLyrics") {
+        updateTask(setActiveExportLyricsTask);
+      } else if (payload.taskType === "exportCover") {
+        updateTask(setActiveExportCoverTask);
       }
     }).then((dispose) => {
       if (disposed) dispose();
@@ -188,6 +197,27 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
     };
   }, []);
 
+  function clearFinishedSnapshots() {
+    const clear = (setTask: Dispatch<SetStateAction<BatchTask | undefined>>) => setTask(clearFinishedTask);
+    clear(setActiveReplayGainTask);
+    clear(setActiveEditTask);
+    clear(setActiveLyricsTask);
+    clear(setActiveMetadataTask);
+    clear(setActiveRenameTask);
+    clear(setActiveExportLyricsTask);
+    clear(setActiveExportCoverTask);
+  }
+
+  function changeOperation(nextOperation: BatchOperation) {
+    if (nextOperation === operation) return;
+    clearFinishedSnapshots();
+    setOperation(nextOperation);
+  }
+
+  function applyTaskSnapshot(setTask: Dispatch<SetStateAction<BatchTask | undefined>>, snapshot: BatchTask) {
+    setTask((current) => mergeBatchTaskSnapshot(current, snapshot));
+  }
+
   async function runReplayGain() {
     if (selectedTracks.length === 0 || replayGainIsActive) return;
     setSubmitting(true);
@@ -197,8 +227,9 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
         selectedTracks.map((track) => track.path),
         JSON.stringify({ concurrency: 3, mode: "track" }),
       );
+      applyTaskSnapshot(setActiveReplayGainTask, created);
       const started = await startBatchTask(created.taskId);
-      setActiveReplayGainTask(started);
+      applyTaskSnapshot(setActiveReplayGainTask, started);
     } catch (error) {
       message.error(String(error));
     } finally {
@@ -210,7 +241,7 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
     if (!activeReplayGainTask || !replayGainIsActive) return;
     try {
       const cancelled = await cancelBatchTask(activeReplayGainTask.taskId);
-      setActiveReplayGainTask(cancelled);
+      applyTaskSnapshot(setActiveReplayGainTask, cancelled);
       message.info(t("tasks.batchCancelled"));
     } catch (error) {
       message.error(String(error));
@@ -226,7 +257,8 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
         selectedTracks.map((track) => track.path),
         JSON.stringify(config),
       );
-      setActiveEditTask(await startBatchTask(created.taskId));
+      applyTaskSnapshot(setActiveEditTask, created);
+      applyTaskSnapshot(setActiveEditTask, await startBatchTask(created.taskId));
     } catch (error) {
       message.error(String(error));
     } finally {
@@ -237,7 +269,7 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
   async function cancelBatchEdit() {
     if (!activeEditTask || !editIsActive) return;
     try {
-      setActiveEditTask(await cancelBatchTask(activeEditTask.taskId));
+      applyTaskSnapshot(setActiveEditTask, await cancelBatchTask(activeEditTask.taskId));
       message.info(t("tasks.batchCancelled"));
     } catch (error) {
       message.error(String(error));
@@ -258,8 +290,9 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
           concurrency: 3,
         }),
       );
+      applyTaskSnapshot(setActiveLyricsTask, created);
       const started = await startBatchTask(created.taskId);
-      setActiveLyricsTask(started);
+      applyTaskSnapshot(setActiveLyricsTask, started);
     } catch (error) {
       message.error(String(error));
     } finally {
@@ -271,7 +304,7 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
     if (!activeLyricsTask || !lyricsIsActive) return;
     try {
       const cancelled = await cancelBatchTask(activeLyricsTask.taskId);
-      setActiveLyricsTask(cancelled);
+      applyTaskSnapshot(setActiveLyricsTask, cancelled);
       message.info(t("tasks.batchCancelled"));
     } catch (error) {
       message.error(String(error));
@@ -296,7 +329,8 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
           lyricsConversionMode: settings.lyricsConversionMode,
         }),
       );
-      setActiveMetadataTask(await startBatchTask(created.taskId));
+      applyTaskSnapshot(setActiveMetadataTask, created);
+      applyTaskSnapshot(setActiveMetadataTask, await startBatchTask(created.taskId));
     } catch (error) {
       message.error(String(error));
     } finally {
@@ -307,7 +341,7 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
   async function cancelMetadataMatch() {
     if (!activeMetadataTask || !metadataIsActive) return;
     try {
-      setActiveMetadataTask(await cancelBatchTask(activeMetadataTask.taskId));
+      applyTaskSnapshot(setActiveMetadataTask, await cancelBatchTask(activeMetadataTask.taskId));
       message.info(t("tasks.batchCancelled"));
     } catch (error) {
       message.error(String(error));
@@ -323,7 +357,8 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
         selectedTracks.map((track) => track.path),
         JSON.stringify(config),
       );
-      setActiveRenameTask(await startBatchTask(created.taskId));
+      applyTaskSnapshot(setActiveRenameTask, created);
+      applyTaskSnapshot(setActiveRenameTask, await startBatchTask(created.taskId));
     } catch (error) {
       message.error(String(error));
     } finally {
@@ -334,7 +369,42 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
   async function cancelRenameFiles() {
     if (!activeRenameTask || !renameIsActive) return;
     try {
-      setActiveRenameTask(await cancelBatchTask(activeRenameTask.taskId));
+      applyTaskSnapshot(setActiveRenameTask, await cancelBatchTask(activeRenameTask.taskId));
+      message.info(t("tasks.batchCancelled"));
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  async function runBatchExport(taskType: "exportLyrics" | "exportCover", destinationDirectory: string, concurrency: number) {
+    const active = taskType === "exportLyrics" ? exportLyricsIsActive : exportCoverIsActive;
+    if (selectedTracks.length === 0 || active || !destinationDirectory) return;
+    setSubmitting(true);
+    try {
+      const created = await createBatchTask(
+        taskType,
+        selectedTracks.map((track) => track.path),
+        JSON.stringify({ destinationDirectory, concurrency }),
+      );
+      if (taskType === "exportLyrics") applyTaskSnapshot(setActiveExportLyricsTask, created);
+      else applyTaskSnapshot(setActiveExportCoverTask, created);
+      const started = await startBatchTask(created.taskId);
+      if (taskType === "exportLyrics") applyTaskSnapshot(setActiveExportLyricsTask, started);
+      else applyTaskSnapshot(setActiveExportCoverTask, started);
+    } catch (error) {
+      message.error(String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function cancelBatchExport(taskType: "exportLyrics" | "exportCover") {
+    const task = taskType === "exportLyrics" ? activeExportLyricsTask : activeExportCoverTask;
+    if (!task || !isActiveTask(task)) return;
+    try {
+      const cancelled = await cancelBatchTask(task.taskId);
+      if (taskType === "exportLyrics") applyTaskSnapshot(setActiveExportLyricsTask, cancelled);
+      else applyTaskSnapshot(setActiveExportCoverTask, cancelled);
       message.info(t("tasks.batchCancelled"));
     } catch (error) {
       message.error(String(error));
@@ -357,7 +427,7 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
               type={operation === key ? "primary" : "text"}
               icon={operationIcons[key]}
               disabled={!available}
-              onClick={() => setOperation(key)}
+              onClick={() => changeOperation(key)}
             >
               {t(`tasks.operations.${key}`)}
             </Button>
@@ -390,6 +460,8 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
           submitting={submitting}
           onRun={runRenameFiles}
           onCancel={cancelRenameFiles}
+          characterMappings={settings.renameCharacterMappings}
+          onChangeCharacterMappings={(renameCharacterMappings) => onChangeSettings({ ...settings, renameCharacterMappings })}
         />
       ) : operation === "lyrics" ? (
         <LyricsFormatPanel
@@ -398,6 +470,24 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
           submitting={submitting}
           onRun={runLyricsFormat}
           onCancel={cancelLyricsFormat}
+        />
+      ) : operation === "exportLyrics" ? (
+        <ExportPanel
+          exportType="exportLyrics"
+          tracks={selectedTracks}
+          task={activeExportLyricsTask}
+          submitting={submitting}
+          onRun={(destinationDirectory, concurrency) => runBatchExport("exportLyrics", destinationDirectory, concurrency)}
+          onCancel={() => cancelBatchExport("exportLyrics")}
+        />
+      ) : operation === "exportCover" ? (
+        <ExportPanel
+          exportType="exportCover"
+          tracks={selectedTracks}
+          task={activeExportCoverTask}
+          submitting={submitting}
+          onRun={(destinationDirectory, concurrency) => runBatchExport("exportCover", destinationDirectory, concurrency)}
+          onCancel={() => cancelBatchExport("exportCover")}
         />
       ) : (
         <ReplayGainTagsPanel
@@ -410,14 +500,6 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
       )}
     </div>
   );
-}
-
-function currentOrLatestTask(tasks: BatchTask[]) {
-  return tasks.find(isActiveTask) ?? tasks[0];
-}
-
-function isActiveTask(task?: BatchTask) {
-  return task?.status === "queued" || task?.status === "running";
 }
 
 function MetadataMatchPanel({ tracks, plugins, task, submitting, onRun, onCancel }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; task?: BatchTask; submitting: boolean; onRun: (config: MetadataMatchConfig) => void; onCancel: () => void }) {
@@ -698,21 +780,21 @@ const defaultCharacterReplacements: Record<string, string> = {
 };
 const renameReplacementOptions = ["", "、", ",", "，", "＼", "／", "：", "＊", "？", "＂", "＜", "＞", "｜", "&"];
 
-function defaultRenameRules(): CharacterMappingRule[] {
+function defaultRenameRules(characterMappings: Record<string, string>): CharacterMappingRule[] {
   return [{
     id: "builtin-invalid-file-characters",
     name: "Invalid file characters",
-    charMappings: { ...defaultCharacterReplacements },
+    charMappings: { ...defaultCharacterReplacements, ...characterMappings },
     description: "Replace characters that are invalid in Windows file names",
     isBuiltIn: true,
     isEnabled: true,
   }];
 }
 
-function RenameFilesPanel({ tracks, task, submitting, onRun, onCancel }: { tracks: AudioTrack[]; task?: BatchTask; submitting: boolean; onRun: (config: RenameFilesConfig) => void; onCancel: () => void }) {
+function RenameFilesPanel({ tracks, task, submitting, onRun, onCancel, characterMappings, onChangeCharacterMappings }: { tracks: AudioTrack[]; task?: BatchTask; submitting: boolean; onRun: (config: RenameFilesConfig) => void; onCancel: () => void; characterMappings: Record<string, string>; onChangeCharacterMappings: (mappings: Record<string, string>) => void }) {
   const { t } = useTranslation();
   const [renameFormat, setRenameFormat] = useState("@1 - @2");
-  const [rules, setRules] = useState<CharacterMappingRule[]>(defaultRenameRules);
+  const rules = useMemo(() => defaultRenameRules(characterMappings), [characterMappings]);
   const [previews, setPreviews] = useState<RenamePreview[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
@@ -754,10 +836,7 @@ function RenameFilesPanel({ tracks, task, submitting, onRun, onCancel }: { track
   const canRun = tracks.length > 0 && previews.length === tracks.length && changedCount > 0 && !previewLoading && !previewError;
 
   function updateReplacement(character: string, replacement: string) {
-    setRules((current) => current.map((rule, index) => index === 0 ? {
-      ...rule,
-      charMappings: { ...rule.charMappings, [character]: replacement },
-    } : rule));
+    onChangeCharacterMappings({ ...characterMappings, [character]: replacement });
   }
 
   function run() {
@@ -912,6 +991,98 @@ function LyricsFormatPanel({ tracks, task, submitting, onRun, onCancel }: { trac
             onClick={() => onRun({ targetFormat, formatLineOrder, removeTagLines, removeEmptyLines })}
           >
             {t("tasks.startLyricsFormat")}
+          </Button>
+        )}
+      </footer>
+    </section>
+  );
+}
+
+function ExportPanel({ exportType, tracks, task, submitting, onRun, onCancel }: {
+  exportType: "exportLyrics" | "exportCover";
+  tracks: AudioTrack[];
+  task?: BatchTask;
+  submitting: boolean;
+  onRun: (destinationDirectory: string, concurrency: number) => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const { message } = App.useApp();
+  const [destinationDirectory, setDestinationDirectory] = useState("");
+  const [concurrency, setConcurrency] = useState(3);
+  const exportsLyrics = exportType === "exportLyrics";
+
+  async function chooseDestination() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: t("tasks.chooseExportDestination"),
+      });
+      if (typeof selected === "string") setDestinationDirectory(selected);
+    } catch (error) {
+      message.error(String(error));
+    }
+  }
+
+  const columns: TableColumnsType<AudioTrack> = [
+    {
+      title: t("table.track"),
+      dataIndex: "title",
+      render: (_, track) => (
+        <Space size={12}>
+          <TrackArtwork track={track} size={38} />
+          <div className="track-title-cell">
+            <Text strong>{track.title || track.fileName}</Text>
+            <Text type="secondary">{track.artist || t("common.unknownArtist")}</Text>
+          </div>
+        </Space>
+      ),
+    },
+    { title: t("tasks.fileName"), dataIndex: "fileName", width: 260, ellipsis: true },
+    {
+      title: t("common.status"),
+      width: 120,
+      render: (_, track) => {
+        const present = exportsLyrics ? track.hasLyrics : track.hasCover;
+        return <Tag color={present ? "success" : "default"}>{t(present ? (exportsLyrics ? "tasks.lyricsPresent" : "tasks.coverPresent") : (exportsLyrics ? "tasks.lyricsMissing" : "tasks.coverMissing"))}</Tag>;
+      },
+    },
+  ];
+
+  return (
+    <section className="batch-panel">
+      <div className="batch-panel-toolbar">
+        <Space orientation="vertical" size={8} className="full-width">
+          <Space.Compact className="full-width">
+            <Input value={destinationDirectory} readOnly placeholder={t("tasks.exportDestinationPlaceholder")} />
+            <Button icon={<FolderOpenOutlined />} onClick={chooseDestination}>{t("tasks.browse")}</Button>
+          </Space.Compact>
+          <Space wrap>
+            <Select
+              value={concurrency}
+              style={{ width: 150 }}
+              onChange={setConcurrency}
+              options={[1, 2, 3, 4, 5].map((value) => ({ value, label: t("tasks.concurrency", { count: value }) }))}
+            />
+            <Text type="secondary">{t("tasks.exportConflictHint")}</Text>
+          </Space>
+        </Space>
+      </div>
+      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={false} scroll={{ x: 760 }} />
+      <footer className="batch-panel-footer">
+        {task && <BatchTaskProgress task={task} />}
+        {isActiveTask(task) ? (
+          <Button danger onClick={onCancel}>{t("common.cancel")}</Button>
+        ) : (
+          <Button
+            type="primary"
+            icon={<ExportOutlined />}
+            loading={submitting}
+            disabled={tracks.length === 0 || !destinationDirectory}
+            onClick={() => onRun(destinationDirectory, concurrency)}
+          >
+            {t(exportsLyrics ? "tasks.startExportLyrics" : "tasks.startExportCover")}
           </Button>
         )}
       </footer>

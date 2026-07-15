@@ -285,6 +285,20 @@ pub(crate) fn read_cover_thumbnail(path: &Path) -> Option<String> {
     thumbnail_data_url_from_bytes(tag.pictures().first()?.data())
 }
 
+pub(crate) fn read_embedded_cover(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    let tagged_file = lofty::read_from_path(path).map_err(|error| error.to_string())?;
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag());
+    let picture = tag.and_then(|tag| {
+        tag.pictures()
+            .iter()
+            .find(|picture| picture.pic_type() == PictureType::CoverFront)
+            .or_else(|| tag.pictures().first())
+    });
+    Ok(picture.map(|picture| picture.data().to_vec()))
+}
+
 pub(crate) fn read_image_data_url(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     if bytes.len() > 25 * 1024 * 1024 {

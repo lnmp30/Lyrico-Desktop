@@ -1,12 +1,13 @@
 use crate::models::ArtistSplitConfig;
 use crate::paths::resolve_data_paths;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use tauri::AppHandle;
 
-const CONFIG_SCHEMA_VERSION: u32 = 2;
+const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -18,6 +19,7 @@ pub(crate) struct DesktopSettings {
     pub(crate) show_romanization: bool,
     pub(crate) only_translation_if_available: bool,
     pub(crate) remove_empty_lyric_lines: bool,
+    pub(crate) rename_character_mappings: BTreeMap<String, String>,
 }
 
 impl Default for DesktopSettings {
@@ -30,6 +32,7 @@ impl Default for DesktopSettings {
             show_romanization: true,
             only_translation_if_available: false,
             remove_empty_lyric_lines: true,
+            rename_character_mappings: default_rename_character_mappings(),
         }
     }
 }
@@ -53,7 +56,11 @@ impl Default for AppConfig {
 }
 
 pub(crate) fn load_desktop_settings(app: &AppHandle) -> Result<DesktopSettings, String> {
-    Ok(load_config(app)?.settings)
+    let mut settings = load_config(app)?.settings;
+    settings.rename_character_mappings = normalize_rename_character_mappings(std::mem::take(
+        &mut settings.rename_character_mappings,
+    ));
+    Ok(settings)
 }
 
 pub(crate) fn save_desktop_settings(
@@ -73,10 +80,42 @@ pub(crate) fn save_desktop_settings(
     ) {
         settings.lyrics_conversion_mode = DesktopSettings::default().lyrics_conversion_mode;
     }
+    settings.rename_character_mappings = normalize_rename_character_mappings(std::mem::take(
+        &mut settings.rename_character_mappings,
+    ));
     let mut config = load_config(app)?;
     config.schema_version = CONFIG_SCHEMA_VERSION;
     config.settings = settings;
     write_json(&resolve_data_paths(app)?.settings, &config)
+}
+
+fn default_rename_character_mappings() -> BTreeMap<String, String> {
+    [
+        ('\\', "＼"),
+        ('/', "／"),
+        (':', "："),
+        ('*', "＊"),
+        ('?', "？"),
+        ('"', "＂"),
+        ('<', "＜"),
+        ('>', "＞"),
+        ('|', "｜"),
+    ]
+    .into_iter()
+    .map(|(character, replacement)| (character.to_string(), replacement.to_string()))
+    .collect()
+}
+
+fn normalize_rename_character_mappings(
+    mappings: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut normalized = default_rename_character_mappings();
+    for (character, replacement) in mappings {
+        if normalized.contains_key(&character) {
+            normalized.insert(character, replacement);
+        }
+    }
+    normalized
 }
 
 pub(crate) fn load_artist_split_config(app: &AppHandle) -> Result<ArtistSplitConfig, String> {
@@ -149,4 +188,35 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
         fs::remove_file(path).map_err(|error| error.to_string())?;
     }
     fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_character_mappings_keep_explicit_removals_and_drop_unknown_keys() {
+        let mappings = BTreeMap::from([
+            ("/".to_string(), String::new()),
+            (":".to_string(), "-".to_string()),
+            ("x".to_string(), "ignored".to_string()),
+        ]);
+        let normalized = normalize_rename_character_mappings(mappings);
+        assert_eq!(normalized.get("/"), Some(&String::new()));
+        assert_eq!(normalized.get(":"), Some(&"-".to_string()));
+        assert_eq!(normalized.get("?"), Some(&"？".to_string()));
+        assert!(!normalized.contains_key("x"));
+    }
+
+    #[test]
+    fn old_settings_json_receives_default_rename_mappings() {
+        let settings: DesktopSettings = serde_json::from_str(
+            r#"{"searchPageSize":10,"lyricFormat":"verbatimLrc","lyricsConversionMode":"none"}"#,
+        )
+        .expect("legacy settings should deserialize through defaults");
+        assert_eq!(
+            settings.rename_character_mappings.get("/"),
+            Some(&"／".to_string())
+        );
+    }
 }

@@ -1,11 +1,10 @@
-import { DeleteOutlined, FolderAddOutlined, FolderOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Alert, Avatar, Badge, Breadcrumb, Button, Card, Col, Empty, Flex, Input, Row, Segmented, Space, Tag, Tooltip, Tree, Typography } from "antd";
+import { DeleteOutlined, FolderAddOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Alert, Badge, Breadcrumb, Button, Card, Col, Empty, Flex, Input, Row, Segmented, Space, Tag, Tooltip, Tree, Typography } from "antd";
 import { useEffect, useMemo, useState, type Key, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, LibraryFolder } from "../app/types";
 import { LibraryTable } from "../components/LibraryTable";
 import { buildLibraryFolderTree, filterTracks, tracksInDirectory, type LibraryFolderNode } from "../domain/library";
-import { formatDateTime } from "../utils/format";
 
 const { DirectoryTree } = Tree;
 const { Title, Text } = Typography;
@@ -45,7 +44,7 @@ export function FoldersPage({
   onChangeSelectionMode: (enabled: boolean) => void;
   onOpenBatch: () => void;
 }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const folderTree = useMemo(() => buildLibraryFolderTree(folders, tracks), [folders, tracks]);
   const nodeMap = useMemo(() => mapFolderNodes(folderTree), [folderTree]);
   const selectedRoot = folderTree.find((node) => samePath(node.rootPath, selectedFolderPath)) ?? folderTree[0];
@@ -87,11 +86,8 @@ export function FoldersPage({
 
   return (
     <div className="workspace page-stack">
-      <Flex justify="space-between" align="start" gap={16} wrap>
-        <div>
-          <Title level={2}>{t("folders.title")}</Title>
-          <Text type="secondary">{t("folders.description")}</Text>
-        </div>
+      <Flex className="folder-page-header" justify="space-between" align="center" gap={16} wrap>
+        <Title level={2}>{t("folders.title")}</Title>
         <Button type="primary" icon={<FolderAddOutlined />} onClick={onAddFolders}>{t("folders.add")}</Button>
       </Flex>
 
@@ -103,7 +99,7 @@ export function FoldersPage({
         </Card>
       ) : (
         <Row gutter={[16, 16]} align="top" className="folder-browser-row">
-          <Col xs={24} lg={8} xl={7} className="folder-browser-column">
+          <Col xs={24} lg={6} xl={5} className="folder-browser-column">
             <Card
               className="folder-tree-card"
               loading={loading && folders.length === 0}
@@ -126,55 +122,44 @@ export function FoldersPage({
             </Card>
           </Col>
 
-          <Col xs={24} lg={16} xl={17} className="folder-browser-column">
+          <Col xs={24} lg={18} xl={19} className="folder-browser-column">
             {activeNode && activeRoot ? (
               <Card
                 className="folder-detail-card"
                 title={
-                  <Flex className="folder-detail-heading" align="center" gap={8}>
-                    <Avatar shape="square" size={36} icon={<FolderOutlined />} />
-                    <Text strong ellipsis={{ tooltip: activeNode.name }}>{activeNode.name}</Text>
-                    <FolderStatusTag status={activeRoot.status} label={t(`folders.status.${activeRoot.status}`)} />
-                  </Flex>
+                  <Tooltip title={displayFolderPath(activeNode.path, activeRoot.path)}>
+                    <Breadcrumb
+                      className="folder-detail-breadcrumb"
+                      items={breadcrumbs.map((node, index) => ({
+                        title: index === breadcrumbs.length - 1 ? node.name : (
+                          <Button type="link" size="small" className="folder-breadcrumb-button" onClick={() => selectDirectory(node)}>{node.name}</Button>
+                        ),
+                      }))}
+                    />
+                  </Tooltip>
                 }
                 extra={
                   <Space>
                     <Tooltip title={t("folders.rescan")}>
                       <Button
+                        type="text"
                         icon={<ReloadOutlined />}
+                        aria-label={t("folders.rescan")}
                         loading={activeRoot.status === "scanning"}
                         disabled={loading || activeRoot.status === "scanning"}
                         onClick={() => onRescanFolder(activeRoot.path)}
-                      >
-                        {t("folders.rescanRoot")}
-                      </Button>
+                      />
                     </Tooltip>
                     {activeNode.parentKey == null ? (
                       <Tooltip title={t("folders.remove")}>
-                        <Button danger icon={<DeleteOutlined />} onClick={() => onRemoveFolder(activeRoot.path)}>{t("folders.removeRoot")}</Button>
+                        <Button type="text" danger icon={<DeleteOutlined />} aria-label={t("folders.remove")} onClick={() => onRemoveFolder(activeRoot.path)} />
                       </Tooltip>
                     ) : null}
                   </Space>
                 }
                 styles={{ body: { padding: 0 } }}
               >
-                <header className="folder-content-header">
-                  <Breadcrumb
-                    items={breadcrumbs.map((node, index) => ({
-                      title: index === breadcrumbs.length - 1 ? node.name : (
-                        <Button type="link" size="small" className="folder-breadcrumb-button" onClick={() => selectDirectory(node)}>{node.name}</Button>
-                      ),
-                    }))}
-                  />
-                  <Text className="folder-current-path" type="secondary" copyable ellipsis={{ tooltip: displayFolderPath(activeNode.path, activeRoot.path) }}>
-                    {displayFolderPath(activeNode.path, activeRoot.path)}
-                  </Text>
-                  <Space size={[8, 8]} wrap>
-                    <Text type="secondary">{t("common.songCount", { count: activeNode.totalTrackCount })}</Text>
-                    <Text type="secondary">{t("folders.lastScanValue", { value: formatDateTime(activeRoot.lastScannedAt, i18n.resolvedLanguage) })}</Text>
-                  </Space>
-                  {activeRoot.error ? <Alert type="error" showIcon message={activeRoot.error} /> : null}
-                </header>
+                {activeRoot.error ? <Alert className="folder-error-alert" type="error" showIcon message={activeRoot.error} /> : null}
 
                 <Flex className="folder-content-toolbar" align="center" justify="space-between" gap={12} wrap>
                   <Segmented
@@ -214,15 +199,6 @@ export function FoldersPage({
         </Row>
       )}
     </div>
-  );
-}
-
-function FolderStatusTag({ status, label }: { status: LibraryFolder["status"]; label: string }) {
-  return (
-    <Tag bordered={false}>
-      <Badge status={status === "error" ? "error" : status === "scanning" ? "processing" : "success"} />
-      {label}
-    </Tag>
   );
 }
 

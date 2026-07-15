@@ -316,26 +316,17 @@ textarea {
   overflow: hidden;
 }
 
-.folder-detail-heading {
+.folder-page-header .ant-typography {
+  margin: 0;
+}
+
+.folder-detail-breadcrumb {
   min-width: 0;
+  overflow: hidden;
 }
 
-.folder-detail-heading > .ant-typography {
-  min-width: 0;
-  flex: 1;
-}
-
-.folder-content-header {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px 20px 14px;
-  border-bottom: 1px solid rgba(5, 5, 5, 0.06);
-}
-
-.folder-current-path {
-  display: block;
-  max-width: min(760px, 62vw);
+.folder-error-alert {
+  margin: 12px 16px 0;
 }
 
 .folder-breadcrumb-button {
@@ -963,10 +954,6 @@ textarea {
   .batch-page-header {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .folder-current-path {
-    max-width: calc(100vw - 72px);
   }
 
   .folder-content-toolbar > * {

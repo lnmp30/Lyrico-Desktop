@@ -1,4 +1,5 @@
 mod edit;
+mod export;
 mod lyrics;
 mod manager;
 mod metadata;

@@ -43,6 +43,7 @@ pub(super) fn processor_for(task_type: &str) -> Result<Box<dyn BatchProcessor>, 
         "matchMetadata" => Ok(Box::new(super::metadata::MatchMetadataProcessor)),
         "formatLyrics" => Ok(Box::new(super::lyrics::LyricsFormatProcessor)),
         "renameFiles" => Ok(Box::new(super::rename::RenameFilesProcessor)),
+        "exportLyrics" | "exportCover" => Ok(Box::new(super::export::ExportProcessor)),
         "replayGain" => Ok(Box::new(ReplayGainProcessor)),
         other => Err(format!("No Rust batch processor is registered for {other}")),
     }

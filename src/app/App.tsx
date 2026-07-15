@@ -64,6 +64,9 @@ const defaultDesktopSettings: DesktopSettings = {
   showRomanization: true,
   onlyTranslationIfAvailable: false,
   removeEmptyLyricLines: true,
+  renameCharacterMappings: {
+    "\\": "＼", "/": "／", ":": "：", "*": "＊", "?": "？", "\"": "＂", "<": "＜", ">": "＞", "|": "｜",
+  },
 };
 
 export default function App() {
@@ -671,6 +674,7 @@ function LyricoDesktop() {
             selectedPaths={selectedPaths}
             settings={desktopSettings}
             artistSeparator={artistSplitConfig.artistSeparator}
+            onChangeSettings={changeDesktopSettings}
           />
         );
       case "settings":

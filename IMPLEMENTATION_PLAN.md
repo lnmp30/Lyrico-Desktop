@@ -1,6 +1,6 @@
 # Lyrico Desktop 实施计划与新对话交接
 
-> 最后整理：2026-07-14
+> 最后整理：2026-07-15
 >
 > 桌面端仓库：`E:\Lyrico-Desktop`
 >
@@ -22,7 +22,7 @@
 
 推荐新对话开场任务：
 
-> 继续 `E:\Lyrico-Desktop\IMPLEMENTATION_PLAN.md`。M2-R 歌词核心 Rust 化的代码迁移与生成链删除已完成，只剩按需补做 release 体积/吞吐记录；下一项实施 M2 其余批处理器。开始前检查实时工作区、暂存区和移动端对应实现，不要重做已完成项，并在每个阶段后更新计划与运行验证。
+> 继续 `E:\Lyrico-Desktop\IMPLEMENTATION_PLAN.md`。M2-R 与批量导出歌词/封面已完成；下一项实施 M2 ReplayGain 专辑模式，再处理轻量历史入口和 Shell 全局任务中心。开始前检查实时工作区、暂存区和移动端对应实现，不要重做已完成项，并在每个阶段后更新计划与运行验证。
 
 ## 1. 当前真实快照
 
@@ -40,15 +40,16 @@
 
 ### 1.2 最近一次验证证据
 
-2026-07-14 批量重命名接入后的最近一次验证：
+2026-07-15 批处理快照、重命名设置和文件夹视图修复后的最近一次验证：
 
 - `npx tsc --noEmit`：通过。
-- `npm test`：18 项通过，其中封面裁剪几何 4 项覆盖真实像素比例、边界移动、固定比例角缩放和自由边缩放，文件夹树 2 项覆盖 Windows 路径层级、直接/递归计数和歌曲范围切换；迁移前 oracle 尚在时 41 项通过，删除前 TypeScript/Rust 共享 fixture 19 项差分通过。
-- `npm run build`：本轮按用户指示不再重复运行；删除生成链后连续两次构建通过且工作区指纹不变的既有证据继续保留，但不冒充本轮新验证。
-- `cargo test --manifest-path src-tauri/Cargo.toml`：43 项通过，2 项环境测试按默认忽略；另用临时生成并带标题/艺术家的 FLAC 显式验证重命名、从新路径重新读取和数据库旧/新路径事务迁移通过。
+- `npm test`：24 项通过；新增 3 项批处理快照测试覆盖快速完成终态不被旧 `running/0` 覆盖、全部跳过仍接收最终计数、切换处理器清理已完成进度。
+- `npm run build`：通过，保留既有大 chunk 警告；主 chunk 为 1,439.99 kB。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：49 项通过，2 项环境测试按默认忽略；新增设置兼容测试覆盖旧 JSON 自动补齐默认映射、空替换持久化和未知键过滤。
 - `cargo check --manifest-path src-tauri/Cargo.toml`：通过。
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --check`：通过。
 - `git diff --check`：通过。
-- 先前已检查批处理“处理器工具栏 + 单操作面板”基线；本轮检查批量编辑、封面、文件夹和重命名面板时，内置浏览器控制运行时均报 `Cannot redefine property: process`，因此这些新增交互仍待真实窗口人工验收，相关项不得提前标记完成。
+- `http://127.0.0.1:1420/` 实际检查精简后的文件夹空状态和 720 px 窄屏头部通过；浏览器预览不具备 Tauri bridge，带真实目录树的数据态继续以用户实窗截图和代码结构核对，不能冒充已完成原生窗口点击验收。
 
 这些结果只是当前基线；新对话修改后必须重新运行，不能直接引用为新改动的验证证据。
 
@@ -125,6 +126,7 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 - [x] SQLite Repository 基线、WAL、外键、busy timeout、事务和 `user_version`。
 - [x] 媒体库关系、插件、插件缓存、批处理、任务项和日志表基线。
 - [x] JSON 设置、原子替换、备份以及旧设置迁移基线。
+- [x] 重命名非法字符映射进入 `settings.json`，保留“空值 = 删除字符”语义并兼容旧配置默认值。
 - [x] 当前统一使用 Tauri `app_local_data_dir`；安装目录便携模式按用户确认暂不作为必做项。
 - [x] 扫描放入后台线程，分为枚举、读标签、索引提交；最多 4 线程有界并发。
 - [x] `path + size + mtime + scan signature` 增量判断和重复扫描拒绝。
@@ -295,7 +297,7 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 - 已解决构建依赖冲突：最终状态不再跟踪/生成 `lyrics_runtime.js`，Cargo 测试不依赖 Node，npm 构建不写 Rust 源码目录。
 - 已补齐迁移安全措施：先冻结同源 fixtures 和差分 oracle，再切后台、再切前端，最后删除旧实现；不存在无验证的一次性全量替换。
 
-### M2：Rust 后台批处理运行器（批量编辑已接入代码与写入闭环，待 UI 验收；其他处理器继续接入）
+### M2：Rust 后台批处理运行器（批量导出已完成；批量编辑/重命名待补原生窗口验收；其余处理器继续接入）
 
 目标：页面只创建任务和订阅快照；任务不由 React `for` 循环驱动，切页和界面重渲染不影响执行。
 
@@ -312,11 +314,11 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
   2. [x] 标签匹配；
   3. [ ] 批量编辑（Rust processor、移动端保留/清空语义、前端配置/预览和真实 FLAC 写后重读已接入；待真实窗口人工验收后勾选）；
   4. [ ] 重命名（Rust 预览/执行、数据库路径迁移、前端单面板和真实 FLAC 闭环已接入；待真实窗口人工验收后勾选）；
-  5. [ ] 导出歌词；
-  6. [ ] 导出封面；
+  5. [x] 导出歌词；
+  6. [x] 导出封面；
   7. [x] ReplayGain 曲目模式；专辑模式仍待实现。
 - [ ] 重命名支持 `@1`–`@8`、非法字符映射、冲突编号和执行前预览（代码与自动化已完成，待真实窗口人工验收后勾选）。
-- [ ] 导出歌词保持 TTML `.ttml`、其他 `.lrc`；导出封面按原文件基名并处理冲突。
+- [x] 导出歌词保持 TTML `.ttml`、其他 `.lrc`；导出封面按原文件基名输出 `.jpg`，同名文件使用原子创建与编号后缀避让，不覆盖已有文件。
 - [ ] 批处理进度与扫描进度合并到 Shell 全局任务中心。
 
 验收：启动批处理后切换到任意页面仍持续执行；取消后不再写后续文件；重启可查看历史；失败项可单独重试。
@@ -330,6 +332,10 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 2026-07-14 M2 批量编辑当前证据：逐文件核对移动端 `EditTagsProcessor`、`BatchEditSongsUseCase`、`BatchEditViewModel` 和 `BatchEditScreen`；桌面以“配置中缺少属性 = 保留、属性存在且为空 = 清空”实现同一语义。新增 Rust `editTags` processor，支持基础标签、创作信息、歌词/统一 Rust offset、评分、封面、ReplayGain 已有四字段、取消前写入检查、无变化跳过和单项结果字段；前端保持处理器工具栏与单面板，字段配置放入次级弹窗并提供逐曲变更预览。临时生成带标签 FLAC 后运行真实写入测试，重新从磁盘读取确认标题、空注释、歌词及未选艺术家/专辑一致。自动化与静态验证通过，但本轮内置浏览器控制运行时初始化失败，尚未完成真实窗口点击/窄屏/长文本验收，因此清单暂不勾选。
 
 2026-07-14 M2 批量重命名当前证据：逐文件核对移动端 `RenameEngine`、`FormatParser`、`FileNameSanitizer`、`ConflictResolver`、`RenameFilesProcessor`、字段定义和字符映射选项。Rust 成为格式展开、非法字符映射、连续相同替换折叠、空结果回退、冲突编号和执行的唯一核心；前端只提交格式/映射并展示 Rust 预览，任务配置持久化每个源文件的确定目标，避免预览与并发执行重新计算后漂移。处理器只允许同目录、同扩展名改名，目标已被占用时明确失败；写后从新路径重读标签，并在 SQLite 事务中删除旧摘要、写入新摘要和重建集合。任务结束后应用按结构化结果迁移当前选择，避免选集仍引用旧路径。临时生成带标题/艺术家的 FLAC 显式验证 `@2 - @1` 重命名和新路径重读通过，数据库专项验证旧路径删除、新路径唯一且重复迁移失败；完整 `cargo test --lib` 为 43 项通过、2 项环境测试忽略，`npm test` 18 项、`npx tsc --noEmit`、`cargo check` 和 `git diff --check` 通过。内置浏览器控制仍在初始化时报 `Cannot redefine property: process`，因此实际表格、映射弹窗、长文件名和窄屏交互待人工验收，清单暂不勾选。
+
+2026-07-15 M2 批量导出当前证据：逐文件核对移动端 `BatchExportProcessor`、`BatchExportViewModel`、`BatchExportBottomSheet` 与批处理文档。桌面新增共享 Rust `ExportProcessor`，`exportLyrics`/`exportCover` 均由后台 runner 执行；无歌词/封面时跳过，取消前后均检查并清理刚写出的文件，歌词格式复用 Rust 唯一歌词核心检测，TTML 输出 `.ttml`、其他输出 `.lrc`，封面优先读取 Front Cover、否则回退首张图片并按原音频基名输出 `.jpg`。与移动端复用同名目标不同，桌面使用 `create_new` 原子创建和 ` (n)` 后缀保护已有文件与并发同名导出。前端恢复两个处理器入口，保留处理器工具栏、单面板、选中歌曲表、目录/并发配置、进度与取消，不引入前端文件循环。临时 FLAC 显式写入 TTML 和嵌入封面后重新读取导出通过；`npm test` 21 项、`npm run build`、`cargo test` 47 项（2 项环境测试忽略）、`cargo check`、`cargo fmt --check`、`git diff --check` 通过。`http://127.0.0.1:1420/` 已检查两个面板、禁用状态和 720 px 窄屏布局；原生目录选择器无法在无 Tauri bridge 的浏览器预览中弹出，但使用既有 dialog 插件路径，完整构建已覆盖注册。
+
+2026-07-15 M2 快速任务进度修复证据：根因是任务在数秒内完成时，Tauri 终态事件可能先于 `startBatchTask` promise 返回，随后旧 `running/0` 快照覆盖已完成状态。前端现于 create 后立即登记 task ID，并使用单调快照合并：同一任务的终态不会被旧 queued/running 回退，计数也不会倒退。应用启动只恢复 active task，不再加载历史完成项；切换处理器时同步清除所有非 active 快照，所以完成结果只在当前面板停留，离开后不再出现在其他处理器。3 项纯测试覆盖快速完成、全部跳过和切页清理；`npm test` 24 项与完整构建通过。
 
 ### M3：插件系统收尾
 
@@ -377,6 +383,8 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 验收：重启后列宽保留；艺术家跳转无误；扫描可取消；单文件失败不终止整个目录。
 
 2026-07-14 M5 文件夹视图当前证据：旧页面的“根目录管理表 + 选中目录歌曲表”两张纵向大表已改为 list/details 工作区。第一轮设计对照 [Ant Design LLM 文档索引](https://ant.design/llms.txt)、[MusicBrainz Picard 主界面](https://picard-docs.musicbrainz.org/en/v2.13/getting_started/screen_main.html)、[Kid3 文件/目录列表](https://kid3.sourceforge.io/kid3_en.html)、[Windows list/details](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/list-details) 与 [BreadcrumbBar](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/breadcrumbbar)；第二轮按用户建议直接复用仓库内插件页面已经验证过的响应式 `Row/Col + 左列表 Card + 右详情 Card` 信息层级，不再把目录树和详情嵌入一个灰底大 Card。根目录和由歌曲路径推导出的有效子目录保留在左侧 `DirectoryTree`；右侧 Card 标题集中显示文件夹图标、名称、状态和根目录操作，正文用 `Breadcrumb` 保持位置上下文，并保留“包含子文件夹/仅当前文件夹”、局部搜索和歌曲表。移除操作只在选中根节点时显示，避免在子目录语境中误解为删除子目录。宽窗口两张 Card 并排、窄窗口沿用 Ant Design 栅格上下堆叠，不增加 viewport 高度计算或双重固定滚动区。目录树 2 项测试与完整前端 18 项测试、TypeScript 检查及 `git diff --check` 通过；内置浏览器连接状态仍不可用，真实页面层级、窄屏和长路径验收待补，所以清单保持未勾选。
+
+2026-07-15 M5 文件夹视图第二轮精简：根据真实窗口截图移除页面描述、右侧重复文件夹图标/名称/状态、正文再次出现的目录名、完整路径、歌曲总数和上次扫描时间；目录上下文只在 Card 标题的面包屑出现一次，完整路径退到悬浮提示。根目录扫描和移除保留为低强调图标操作，错误仅在真实存在时显示；范围、搜索和歌曲表成为正文唯一常驻内容。宽屏左树从 7/24 收窄到 5/24，右侧让出更多歌曲表空间，窄屏仍由 Ant `Row/Col` 堆叠。空状态和 720 px 窄屏实查通过；浏览器预览无 Tauri 数据桥接，填充真实目录后的长路径/多层树仍待原生窗口复验，因此清单不提前勾选。
 
 ### M6：后端边界与回归保护
 
@@ -544,6 +552,6 @@ git diff --check
 - 艺术家详情的专辑视图与艺术家文本跳转尚未实现。
 - 扫描取消和失败文件明细尚未实现。
 - Rust 大文件拆分尚未收尾。
-- 本轮新增批量编辑 UI、封面尺寸/裁剪/即时预览和文件夹 list/details 布局仍缺真实窗口人工验收；内置浏览器控制运行时当前报 `Cannot redefine property: process`，恢复后应优先补验收再更新勾选状态。
+- 批量编辑 UI、封面尺寸/裁剪/即时预览仍缺真实 Tauri 窗口人工验收；文件夹空状态和窄屏已在浏览器通过，但填充真实目录后的长路径/多层树仍需原生窗口复验。
 - 安装目录便携模式当前未实现；按用户确认继续使用 `app_local_data_dir`，不属于当前阻塞问题。
 - Vite 主 bundle 仍有大于 500 kB 的警告；M2-R 已将主 chunk 从 2,675.01 kB 降到 1,396.58 kB，后续再决定路由级或组件级代码分割，优先级仍低于功能正确性和任务稳定性。

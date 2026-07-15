@@ -119,6 +119,7 @@ export type DesktopSettings = {
   showRomanization: boolean;
   onlyTranslationIfAvailable: boolean;
   removeEmptyLyricLines: boolean;
+  renameCharacterMappings: Record<string, string>;
 };
 
 export type PluginCapability = "searchSongs" | "getLyrics" | "searchCovers";
