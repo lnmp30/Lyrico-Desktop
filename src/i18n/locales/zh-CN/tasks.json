@@ -9,6 +9,23 @@
     "taskSummary": "{{current}}/{{total}} · 成功 {{success}} · 跳过 {{skipped}} · 失败 {{failed}}",
     "batchFinished": "批处理完成：成功 {{success}}，跳过 {{skipped}}，失败 {{failed}}",
     "batchCancelled": "批处理已取消",
+    "viewLog": "查看记录",
+    "logTitle": "处理记录",
+    "loadingLog": "正在读取处理记录…",
+    "noLogItems": "没有相关记录",
+    "logStatus": {
+      "succeeded": "成功 {{count}}",
+      "failed": "失败 {{count}}",
+      "skipped": "跳过 {{count}}"
+    },
+    "logResult": {
+      "succeeded": "处理完成",
+      "failed": "处理失败",
+      "skipped": "已跳过",
+      "queued": "等待处理",
+      "running": "正在处理",
+      "cancelled": "已取消"
+    },
     "keepLyricsFormat": "保持当前格式",
     "formatLineOrder": "整理行顺序",
     "removeTagLines": "移除标签行",

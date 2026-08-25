@@ -1,9 +1,9 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { App as AntApp, ConfigProvider, Form, theme } from "antd";
+import { App as AntApp, ConfigProvider, Form, Spin, theme } from "antd";
 import enUS from "antd/locale/en_US";
 import zhCN from "antd/locale/zh_CN";
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   loadLibraryFolders,
@@ -38,6 +38,10 @@ import { Shell } from "../components/Shell";
 import { TitleBar } from "../components/TitleBar";
 import { AppContextMenu } from "../components/AppContextMenu";
 import { SongDetails } from "../components/SongDetails";
+import { AlbumsPage } from "../pages/AlbumsPage";
+import { ArtistsPage } from "../pages/ArtistsPage";
+import { FoldersPage } from "../pages/FoldersPage";
+import { SongsPage } from "../pages/SongsPage";
 import { defaultArtistSplitConfig, filterTracks, groupAlbums, groupArtists } from "../domain/library";
 import { completeTagForm, splitGenreValues } from "../domain/tagForm";
 import { detectLyricsFormat } from "../backend/lyricsApi";
@@ -50,18 +54,15 @@ import {
 } from "../i18n";
 import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, DesktopSettings, LibraryFolder, PluginInstallDraft, PluginSourceKind, ScanProgress, SourcePlugin, TagForm, ViewKey } from "./types";
 
-const AlbumsPage = lazy(() => import("../pages/AlbumsPage").then((m) => ({ default: m.AlbumsPage })));
-const ArtistsPage = lazy(() => import("../pages/ArtistsPage").then((m) => ({ default: m.ArtistsPage })));
-const FoldersPage = lazy(() => import("../pages/FoldersPage").then((m) => ({ default: m.FoldersPage })));
 const PluginsPage = lazy(() => import("../pages/PluginsPage").then((m) => ({ default: m.PluginsPage })));
 const SettingsPage = lazy(() => import("../pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
-const SongsPage = lazy(() => import("../pages/SongsPage").then((m) => ({ default: m.SongsPage })));
 const TasksPage = lazy(() => import("../pages/TasksPage").then((m) => ({ default: m.TasksPage })));
 import { getReplayGainProgress, publishReplayGainProgress } from "../hooks/useReplayGainProgress";
 import "../App.css";
 
 const defaultDesktopSettings: DesktopSettings = {
   searchPageSize: 10,
+  replayGainTargetLoudness: -18,
   lyricFormat: "verbatimLrc",
   lyricsConversionMode: "none",
   showTranslation: true,
@@ -126,7 +127,22 @@ export default function App() {
 }
 
 function PageFallback() {
-  return null;
+  return <div className="page-route-loading"><Spin /></div>;
+}
+
+const viewScrollPositions = new Map<string, number>();
+
+function PageViewport({ scrollKey, hidden, children }: { scrollKey: string; hidden: boolean; children: ReactNode }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTop = viewScrollPositions.get(scrollKey) ?? 0;
+    return () => {
+      viewScrollPositions.set(scrollKey, viewport.scrollTop);
+    };
+  }, [scrollKey]);
+  return <div ref={viewportRef} className={`page-viewport${hidden ? " is-hidden" : ""}`} aria-hidden={hidden}>{children}</div>;
 }
 
 function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettings["theme"]) => void }) {
@@ -159,16 +175,12 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
   const artistSplitSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const deferredQuery = useDeferredValue(query);
-  const isSearchView = activeView === "songs" || activeView === "albums" || activeView === "artists";
   const filteredTracks = useMemo(
-    () => (isSearchView ? filterTracks(tracks, deferredQuery) : tracks),
-    [tracks, deferredQuery, isSearchView],
+    () => filterTracks(tracks, deferredQuery),
+    [tracks, deferredQuery],
   );
-  const albums = useMemo(() => (activeView === "albums" ? groupAlbums(filteredTracks) : []), [activeView, filteredTracks]);
-  const artists = useMemo(
-    () => (activeView === "artists" ? groupArtists(filteredTracks, artistSplitConfig) : []),
-    [activeView, filteredTracks, artistSplitConfig],
-  );
+  const [albums, setAlbums] = useState<ReturnType<typeof groupAlbums>>([]);
+  const [artists, setArtists] = useState<ReturnType<typeof groupArtists>>([]);
   const trackByPath = useMemo(() => {
     const map = new Map<string, AudioTrack>();
     for (const track of tracks) map.set(track.path, track);
@@ -182,6 +194,30 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
       return track ? [track] : [];
     });
   }, [selectedPaths, trackByPath]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const albumTimer = globalThis.setTimeout(() => {
+      const nextAlbums = groupAlbums(filteredTracks);
+      if (!cancelled) startTransition(() => setAlbums(nextAlbums));
+    }, 0);
+    const artistTimer = globalThis.setTimeout(() => {
+      const nextArtists = groupArtists(filteredTracks, artistSplitConfig);
+      if (!cancelled) startTransition(() => setArtists(nextArtists));
+    }, 16);
+    return () => {
+      cancelled = true;
+      globalThis.clearTimeout(albumTimer);
+      globalThis.clearTimeout(artistTimer);
+    };
+  }, [artistSplitConfig, filteredTracks]);
+
+  useEffect(() => {
+    const timer = globalThis.setTimeout(() => {
+      void Promise.all([import("../pages/PluginsPage"), import("../pages/SettingsPage"), import("../pages/TasksPage")]);
+    }, 250);
+    return () => globalThis.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     Promise.all([loadLibraryFolders(), loadLibraryTracks(), loadArtistSplitConfig(), loadSourcePlugins(), loadDesktopSettings()])
@@ -409,7 +445,6 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
   }, []);
 
   const onAlbumOpenTrack = useCallback((path: string) => {
-    setAlbumDetailsOpen(false);
     void openTrackDetails(path);
   }, [openTrackDetails]);
 
@@ -422,7 +457,6 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
   }, []);
 
   const onArtistOpenTrack = useCallback((path: string) => {
-    setArtistDetailsOpen(false);
     void openTrackDetails(path);
   }, [openTrackDetails]);
 
@@ -437,7 +471,7 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
     const jobId = crypto.randomUUID();
     publishReplayGainProgress({ jobId, path: selectedTrack.path, percent: 0, status: "running" });
     try {
-      const result = await analyzeReplayGain(selectedTrack.path, jobId);
+      const result = await analyzeReplayGain(selectedTrack.path, jobId, desktopSettings.replayGainTargetLoudness);
       form.setFieldsValue({
         replayGainTrackGain: result.trackGain,
         replayGainTrackPeak: result.trackPeak,
@@ -667,6 +701,13 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
       });
   }
 
+  const changeView = useCallback((view: ViewKey) => {
+    setDetailsOpen(false);
+    setAlbumDetailsOpen(false);
+    setArtistDetailsOpen(false);
+    setActiveView(view);
+  }, []);
+
   function renderActivePage() {
     switch (activeView) {
       case "albums":
@@ -791,23 +832,33 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
     }
   }
 
+  const activeScrollKey = activeView === "albums" && albumDetailsOpen
+    ? `albums:${selectedAlbumId ?? "detail"}`
+    : activeView === "artists" && artistDetailsOpen
+      ? `artists:${selectedArtistId ?? "detail"}`
+      : `${activeView}:root`;
+
   return (
     <>
     <TitleBar />
+    {!detailsOpen ? <Form form={form} component={false} /> : null}
       <Shell
       activeView={activeView}
       folders={folders}
       trackCount={tracks.length}
       scanProgress={scanProgress}
       selectedTracks={selectedTracks}
-      onChangeView={setActiveView}
+      onChangeView={changeView}
       onCancelReplayGain={cancelActiveReplayGain}
       onRemoveSelectedTrack={onRemoveSelectedTrack}
       onClearSelectedTracks={onClearSelectedTracks}
       onOpenSelectedBatch={openBatchForSelection}
     >
-      <Suspense fallback={<PageFallback />}>{renderActivePage()}</Suspense>
-      <SongDetails
+      <Suspense fallback={<PageFallback />}>
+      <PageViewport key={activeView} scrollKey={activeScrollKey} hidden={detailsOpen}>
+        {renderActivePage()}
+      </PageViewport>
+      {detailsOpen ? <div className="page-viewport detail-page-viewport"><SongDetails
         open={detailsOpen}
         loading={detailsLoading}
         track={selectedTrack}
@@ -827,9 +878,10 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
         onImportLyrics={importLyricsFile}
         onExportLyrics={exportLyricsFile}
         onClose={() => setDetailsOpen(false)}
-      />
+      /></div> : null}
+      </Suspense>
     </Shell>
-    <AppContextMenu onNavigate={setActiveView} />
+    <AppContextMenu onNavigate={changeView} />
     </>
   );
 }

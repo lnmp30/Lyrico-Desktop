@@ -1,6 +1,6 @@
-import { ApiOutlined, GlobalOutlined, ScissorOutlined, SoundOutlined } from "@ant-design/icons";
-import { Card, InputNumber, Select, Switch, Tabs, Typography } from "antd";
-import type { ReactNode } from "react";
+import { ApiOutlined, CalculatorOutlined, GlobalOutlined, ScissorOutlined, SoundOutlined } from "@ant-design/icons";
+import { Button, Card, InputNumber, Modal, Radio, Select, Space, Switch, Tabs, Typography } from "antd";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { ArtistSplitConfig, DesktopSettings } from "../app/types";
 import type { LanguagePreference } from "../i18n";
@@ -24,7 +24,26 @@ export function SettingsPage({
   onChangeSettings: (settings: DesktopSettings) => void;
 }) {
   const { t } = useTranslation();
+  const [replayGainDialogOpen, setReplayGainDialogOpen] = useState(false);
+  const [replayGainPreset, setReplayGainPreset] = useState<string>(String(settings.replayGainTargetLoudness));
+  const [customLoudness, setCustomLoudness] = useState<number | null>(settings.replayGainTargetLoudness);
   const update = <K extends keyof DesktopSettings>(key: K, value: DesktopSettings[K]) => onChangeSettings({ ...settings, [key]: value });
+
+  function openReplayGainDialog() {
+    const preset = [-23, -18, -14].includes(settings.replayGainTargetLoudness)
+      ? String(settings.replayGainTargetLoudness)
+      : "custom";
+    setReplayGainPreset(preset);
+    setCustomLoudness(settings.replayGainTargetLoudness);
+    setReplayGainDialogOpen(true);
+  }
+
+  function saveReplayGainTarget() {
+    const value = replayGainPreset === "custom" ? customLoudness : Number(replayGainPreset);
+    if (value == null || !Number.isFinite(value) || value < -60 || value > 0) return;
+    update("replayGainTargetLoudness", value);
+    setReplayGainDialogOpen(false);
+  }
 
   return (
     <div className="workspace page-stack settings-view">
@@ -107,6 +126,18 @@ export function SettingsPage({
               ),
             },
             {
+              key: "replayGain",
+              label: t("settings.replayGain"),
+              icon: <CalculatorOutlined />,
+              children: (
+                <SettingsSection title={t("settings.replayGain")}>
+                  <SettingRow title={t("settings.replayGainTargetLoudness")} description={t("settings.replayGainTargetLoudnessHint")}>
+                    <Button onClick={openReplayGainDialog}>{formatLoudness(settings.replayGainTargetLoudness)}</Button>
+                  </SettingRow>
+                </SettingsSection>
+              ),
+            },
+            {
               key: "library",
               label: t("settings.library"),
               icon: <ScissorOutlined />,
@@ -119,8 +150,47 @@ export function SettingsPage({
           ]}
         />
       </Card>
+
+      <Modal
+        title={t("settings.replayGainTargetLoudness")}
+        open={replayGainDialogOpen}
+        okText={t("common.save")}
+        cancelText={t("common.cancel")}
+        okButtonProps={{ disabled: replayGainPreset === "custom" && (customLoudness == null || customLoudness < -60 || customLoudness > 0) }}
+        onOk={saveReplayGainTarget}
+        onCancel={() => setReplayGainDialogOpen(false)}
+        destroyOnHidden
+      >
+        <Space orientation="vertical" size={12} className="full-width">
+          <Radio.Group value={replayGainPreset} onChange={(event) => setReplayGainPreset(event.target.value)} className="full-width">
+            <Space orientation="vertical" className="full-width">
+              <Radio value="-23">{t("settings.replayGainPresetEbu")}</Radio>
+              <Radio value="-18">{t("settings.replayGainPresetDefault")}</Radio>
+              <Radio value="-14">{t("settings.replayGainPresetStreaming")}</Radio>
+              <Radio value="custom">{t("settings.replayGainPresetCustom")}</Radio>
+            </Space>
+          </Radio.Group>
+          {replayGainPreset === "custom" ? <InputNumber
+            min={-60}
+            max={0}
+            precision={2}
+            value={customLoudness}
+            addonAfter="LUFS"
+            placeholder={t("settings.replayGainCustomPlaceholder")}
+            className="full-width"
+            onChange={setCustomLoudness}
+          /> : null}
+          {replayGainPreset === "custom" && (customLoudness == null || customLoudness < -60 || customLoudness > 0)
+            ? <Typography.Text type="danger">{t("settings.replayGainTargetInvalid")}</Typography.Text>
+            : null}
+        </Space>
+      </Modal>
     </div>
   );
+}
+
+function formatLoudness(value: number) {
+  return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2)} LUFS`;
 }
 
 function SettingsSection({ title, children }: { title: string; children: ReactNode }) {

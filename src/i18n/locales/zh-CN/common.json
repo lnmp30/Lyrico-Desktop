@@ -15,6 +15,7 @@
     "save": "保存",
     "reload": "重新读取",
     "cancel": "取消",
+    "back": "返回",
     "minimize": "最小化",
     "maximize": "最大化",
     "restore": "还原",

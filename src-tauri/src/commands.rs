@@ -1,6 +1,6 @@
 use crate::audio::{
-    is_audio_path, read_cover_thumbnail, read_image_data_url, read_track, save_tags,
-    write_image_data_url, ArtworkMode,
+    is_audio_path, read_cover_artwork, read_cover_thumbnail, read_image_data_url, read_track,
+    save_tags, write_image_data_url, ArtworkMode,
 };
 use crate::batch::{generate_rename_previews, CharacterMappingRule, RenamePreview};
 use crate::config as app_config;
@@ -312,6 +312,7 @@ pub(crate) async fn analyze_replay_gain(
     state: State<'_, AppState>,
     job_id: String,
     path: String,
+    target_loudness_lufs: f64,
 ) -> Result<ReplayGainAnalysis, String> {
     if job_id.trim().is_empty() {
         return Err("ReplayGain job id is required".to_string());
@@ -336,6 +337,7 @@ pub(crate) async fn analyze_replay_gain(
         analyze_track(
             worker_job_id.clone(),
             Path::new(&worker_path),
+            target_loudness_lufs,
             &cancelled,
             |progress| {
                 emit_replay_gain_progress(
@@ -603,8 +605,9 @@ pub(crate) async fn load_library_track(app: AppHandle, path: String) -> Result<A
 pub(crate) async fn load_track_covers(
     state: State<'_, AppState>,
     paths: Vec<String>,
+    artwork: bool,
 ) -> Result<Vec<TrackCover>, String> {
-    let cached = state.database.load_cover_thumbnails(&paths)?;
+    let cached = state.database.load_cover_previews(&paths, artwork)?;
     let missing = paths
         .iter()
         .filter(|path| !cached.contains_key(*path))
@@ -614,7 +617,12 @@ pub(crate) async fn load_track_covers(
         missing
             .into_iter()
             .filter_map(|path| {
-                read_cover_thumbnail(Path::new(&path)).map(|cover_data_url| TrackCover {
+                let cover_data_url = if artwork {
+                    read_cover_artwork(Path::new(&path))
+                } else {
+                    read_cover_thumbnail(Path::new(&path))
+                };
+                cover_data_url.map(|cover_data_url| TrackCover {
                     path,
                     cover_data_url,
                 })
@@ -628,7 +636,7 @@ pub(crate) async fn load_track_covers(
             .iter()
             .map(|cover| (cover.path.clone(), cover.cover_data_url.clone()))
             .collect::<Vec<_>>();
-        state.database.save_cover_thumbnails(&thumbnails)?;
+        state.database.save_cover_previews(&thumbnails, artwork)?;
     }
     let mut result = paths
         .into_iter()

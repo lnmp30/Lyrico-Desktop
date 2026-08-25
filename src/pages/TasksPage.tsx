@@ -1,5 +1,6 @@
 import {
   CalculatorOutlined,
+  ArrowLeftOutlined,
   EditOutlined,
   ExportOutlined,
   FileTextOutlined,
@@ -10,11 +11,11 @@ import {
 } from "@ant-design/icons";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { App, Button, Checkbox, Input, InputNumber, Modal, Progress, Rate, Select, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
-import { memo, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { App, Button, Checkbox, Empty, Input, InputNumber, Modal, Progress, Rate, Segmented, Select, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
-import type { AudioTrack, BatchTask, CharacterMappingRule, DesktopSettings, RenamePreview, SourcePlugin } from "../app/types";
-import { cancelBatchTask, createBatchTask, loadBatchTasks, previewBatchRename, readImageFile, startBatchTask } from "../backend/audioApi";
+import type { AudioTrack, BatchTask, BatchTaskItem, CharacterMappingRule, DesktopSettings, RenamePreview, SourcePlugin } from "../app/types";
+import { cancelBatchTask, createBatchTask, loadBatchTaskItems, loadBatchTasks, previewBatchRename, readImageFile, startBatchTask } from "../backend/audioApi";
 import { TrackArtwork } from "../components/TrackArtwork";
 import { LYRIC_FORMATS, type LyricFormat } from "../backend/lyricsApi";
 import { clearFinishedTask, currentActiveTask, isActiveTask, mergeBatchTaskSnapshot } from "../domain/batchTasks";
@@ -116,6 +117,8 @@ const operationIcons: Record<BatchOperation, ReactNode> = {
   replaygain: <CalculatorOutlined />,
 };
 
+const BatchLogNavigationContext = createContext<(task: BatchTask) => void>(() => undefined);
+
 export const TasksPage = memo(function TasksPage({ tracks, plugins, selectedPaths, settings, artistSeparator, onChangeSettings }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; selectedPaths: string[]; settings: DesktopSettings; artistSeparator: string; onChangeSettings: (settings: DesktopSettings) => void }) {
   const { t } = useTranslation();
   const { message } = App.useApp();
@@ -128,6 +131,7 @@ export const TasksPage = memo(function TasksPage({ tracks, plugins, selectedPath
   const [activeExportLyricsTask, setActiveExportLyricsTask] = useState<BatchTask>();
   const [activeExportCoverTask, setActiveExportCoverTask] = useState<BatchTask>();
   const [submitting, setSubmitting] = useState(false);
+  const [logTask, setLogTask] = useState<BatchTask>();
   const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
   const selectedTracks = useMemo(() => tracks.filter((track) => selectedSet.has(track.path)), [selectedSet, tracks]);
   const operations = ["metadata", "edit", "rename", "lyrics", "exportLyrics", "exportCover", "replaygain"] as BatchOperation[];
@@ -228,7 +232,7 @@ export const TasksPage = memo(function TasksPage({ tracks, plugins, selectedPath
       const created = await createBatchTask(
         "replayGain",
         selectedTracks.map((track) => track.path),
-        JSON.stringify({ concurrency: 3, mode: "track" }),
+        JSON.stringify({ concurrency: 3, mode: "track", targetLoudness: settings.replayGainTargetLoudness }),
       );
       applyTaskSnapshot(setActiveReplayGainTask, created);
       const started = await startBatchTask(created.taskId);
@@ -414,9 +418,16 @@ export const TasksPage = memo(function TasksPage({ tracks, plugins, selectedPath
     }
   }
 
+  if (logTask) {
+    const currentLogTask = [activeReplayGainTask, activeEditTask, activeLyricsTask, activeMetadataTask, activeRenameTask, activeExportLyricsTask, activeExportCoverTask]
+      .find((task) => task?.taskId === logTask.taskId) ?? logTask;
+    return <BatchTaskLogPage task={currentLogTask} onBack={() => setLogTask(undefined)} />;
+  }
+
   return (
+    <BatchLogNavigationContext.Provider value={setLogTask}>
     <div className="workspace page-stack tasks-view">
-      <header className="batch-page-header">
+      <header className="workspace-page-header batch-page-header">
         <Title level={2}>{t("tasks.title")}</Title>
         <Text strong>{t("selection.count", { count: selectedTracks.length })}</Text>
       </header>
@@ -502,6 +513,7 @@ export const TasksPage = memo(function TasksPage({ tracks, plugins, selectedPath
         />
       )}
     </div>
+    </BatchLogNavigationContext.Provider>
   );
 });
 
@@ -1157,12 +1169,78 @@ function ReplayGainTagsPanel({ tracks, task, submitting, onRun, onCancel }: { tr
 
 function BatchTaskProgress({ task }: { task: BatchTask }) {
   const { t } = useTranslation();
+  const openLog = useContext(BatchLogNavigationContext);
+
   return (
     <div className="batch-task-progress">
       <Progress percent={task.total ? Math.round((task.current / task.total) * 100) : 0} showInfo={false} size="small" status={task.status === "failed" ? "exception" : task.status === "succeeded" ? "success" : "active"} />
-      <Text type="secondary">
-        {t("tasks.taskSummary", { current: task.current, total: task.total, success: task.successCount, skipped: task.skippedCount, failed: task.failureCount })}
-      </Text>
+      <Space size={8} wrap>
+        <Text type="secondary">
+          {t("tasks.taskSummary", { current: task.current, total: task.total, success: task.successCount, skipped: task.skippedCount, failed: task.failureCount })}
+        </Text>
+        <Button type="link" size="small" onClick={() => openLog(task)}>{t("tasks.viewLog")}</Button>
+      </Space>
+    </div>
+  );
+}
+
+function BatchTaskLogPage({ task, onBack }: { task: BatchTask; onBack: () => void }) {
+  const { t } = useTranslation();
+  const [logStatus, setLogStatus] = useState<"succeeded" | "failed" | "skipped">(() => task.failureCount > 0 ? "failed" : task.skippedCount > 0 ? "skipped" : "succeeded");
+  const [items, setItems] = useState<BatchTaskItem[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    setLoading(true);
+    void loadBatchTaskItems(task.taskId)
+      .then((nextItems) => {
+        if (!disposed) setItems(nextItems);
+      })
+      .finally(() => {
+        if (!disposed) setLoading(false);
+      });
+    return () => { disposed = true; };
+  }, [task.current, task.status, task.taskId]);
+
+  const counts = useMemo(() => ({
+    succeeded: items.filter((item) => item.status === "succeeded").length,
+    failed: items.filter((item) => item.status === "failed").length,
+    skipped: items.filter((item) => item.status === "skipped").length,
+  }), [items]);
+  const visibleItems = items.filter((item) => item.status === logStatus);
+
+  return (
+    <div className="workspace page-stack detail-subpage batch-log-page">
+      <header className="subpage-toolbar">
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={onBack}>{t("common.back")}</Button>
+        <Text strong>{t("tasks.logTitle")}</Text>
+      </header>
+        <Space orientation="vertical" size={16} className="full-width">
+          <Segmented
+            block
+            value={logStatus}
+            onChange={(value) => setLogStatus(value as typeof logStatus)}
+            options={(["succeeded", "failed", "skipped"] as const).map((status) => ({
+              value: status,
+              label: t(`tasks.logStatus.${status}`, { count: counts[status] }),
+            }))}
+          />
+          {task.errorMessage ? <Text type="danger">{task.errorMessage}</Text> : null}
+          {visibleItems.length ? (
+            <div className="batch-log-list">
+              {visibleItems.map((item) => (
+                <div className="batch-log-item" key={item.itemId}>
+                  <div className="batch-log-copy">
+                    <Text strong ellipsis={{ tooltip: item.fileName }}>{item.fileName}</Text>
+                    <Text type="secondary" ellipsis={{ tooltip: item.songPath }}>{item.songPath}</Text>
+                  </div>
+                  <div className="batch-log-message">{item.errorMessage || t(`tasks.logResult.${item.status}`)}</div>
+                </div>
+              ))}
+            </div>
+          ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loading ? t("tasks.loadingLog") : t("tasks.noLogItems")} />}
+        </Space>
     </div>
   );
 }

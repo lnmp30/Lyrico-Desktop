@@ -1,5 +1,5 @@
 import { DeleteOutlined, FolderAddOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Alert, Badge, Breadcrumb, Button, Card, Col, Empty, Flex, Input, Row, Segmented, Space, Tag, Tooltip, Tree, Typography } from "antd";
+import { Alert, Badge, Breadcrumb, Button, Empty, Flex, Input, Segmented, Space, Tooltip, Tree, Typography } from "antd";
 import { memo, useEffect, useMemo, useState, type Key, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, LibraryFolder } from "../app/types";
@@ -92,21 +92,19 @@ export const FoldersPage = memo(function FoldersPage({
       </Flex>
 
       {folders.length === 0 && !loading ? (
-        <Card>
+        <section className="desktop-list-surface">
           <Empty className="page-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("folders.empty")}>
             <Button type="primary" icon={<FolderAddOutlined />} onClick={onAddFolders}>{t("folders.add")}</Button>
           </Empty>
-        </Card>
+        </section>
       ) : (
-        <Row gutter={[16, 16]} align="top" className="folder-browser-row">
-          <Col xs={24} lg={6} xl={5} className="folder-browser-column">
-            <Card
-              className="folder-tree-card"
-              loading={loading && folders.length === 0}
-              title={t("folders.libraryRoots")}
-              extra={<Tag bordered={false}>{folders.length}</Tag>}
-              styles={{ body: { padding: 8 } }}
-            >
+        <section className="folder-browser">
+          <aside className="folder-sidebar">
+            <Flex className="folder-pane-header" align="center" justify="space-between">
+              <Text strong>{t("folders.libraryRoots")}</Text>
+              <Text type="secondary">{folders.length}</Text>
+            </Flex>
+            <div className="folder-tree-scroll">
               <DirectoryTree
                 blockNode
                 showIcon
@@ -119,14 +117,13 @@ export const FoldersPage = memo(function FoldersPage({
                   if (node) selectDirectory(node);
                 }}
               />
-            </Card>
-          </Col>
+            </div>
+          </aside>
 
-          <Col xs={24} lg={18} xl={19} className="folder-browser-column">
+          <main className="folder-main-pane">
             {activeNode && activeRoot ? (
-              <Card
-                className="folder-detail-card"
-                title={
+              <>
+                <Flex className="folder-pane-header" align="center" justify="space-between" gap={12}>
                   <Tooltip title={displayFolderPath(activeNode.path, activeRoot.path)}>
                     <Breadcrumb
                       className="folder-detail-breadcrumb"
@@ -137,8 +134,6 @@ export const FoldersPage = memo(function FoldersPage({
                       }))}
                     />
                   </Tooltip>
-                }
-                extra={
                   <Space>
                     <Tooltip title={t("folders.rescan")}>
                       <Button
@@ -156,9 +151,7 @@ export const FoldersPage = memo(function FoldersPage({
                       </Tooltip>
                     ) : null}
                   </Space>
-                }
-                styles={{ body: { padding: 0 } }}
-              >
+                </Flex>
                 {activeRoot.error ? <Alert className="folder-error-alert" type="error" showIcon message={activeRoot.error} /> : null}
 
                 <Flex className="folder-content-toolbar" align="center" justify="space-between" gap={12} wrap>
@@ -191,12 +184,12 @@ export const FoldersPage = memo(function FoldersPage({
                   onChangeSelectionMode={onChangeSelectionMode}
                   onOpenBatch={onOpenBatch}
                 />
-              </Card>
+              </>
             ) : (
-              <Card className="folder-detail-card"><Empty description={t("folders.empty")} /></Card>
+              <Empty className="folder-pane-empty" description={t("folders.empty")} />
             )}
-          </Col>
-        </Row>
+          </main>
+        </section>
       )}
     </div>
   );

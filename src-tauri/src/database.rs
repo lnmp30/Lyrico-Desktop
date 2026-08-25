@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 3;
+const DATABASE_SCHEMA_VERSION: u32 = 5;
 static NEXT_BATCH_ID: AtomicU64 = AtomicU64::new(1);
 const BATCH_TASK_TYPES: &[&str] = &[
     "matchMetadata",
@@ -310,19 +310,22 @@ impl Database {
             .map_err(|error| error.to_string())
     }
 
-    pub(crate) fn load_cover_thumbnails(
+    pub(crate) fn load_cover_previews(
         &self,
         paths: &[String],
+        artwork: bool,
     ) -> Result<HashMap<String, String>, String> {
         if paths.is_empty() {
             return Ok(HashMap::new());
         }
         let connection = self.lock()?;
         let placeholders = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let query = format!(
-            "SELECT path, cover_thumbnail_data_url FROM songs \
-             WHERE path IN ({placeholders}) AND cover_thumbnail_data_url IS NOT NULL"
-        );
+        let column = if artwork {
+            "cover_artwork_data_url"
+        } else {
+            "cover_thumbnail_data_url"
+        };
+        let query = format!("SELECT path, {column} FROM songs WHERE path IN ({placeholders}) AND {column} IS NOT NULL");
         let mut statement = connection
             .prepare(&query)
             .map_err(|error| error.to_string())?;
@@ -344,19 +347,24 @@ impl Database {
         Ok(thumbnails)
     }
 
-    pub(crate) fn save_cover_thumbnails(
+    pub(crate) fn save_cover_previews(
         &self,
         thumbnails: &[(String, String)],
+        artwork: bool,
     ) -> Result<(), String> {
         if thumbnails.is_empty() {
             return Ok(());
         }
         let connection = self.lock()?;
+        let column = if artwork {
+            "cover_artwork_data_url"
+        } else {
+            "cover_thumbnail_data_url"
+        };
         for (path, data_url) in thumbnails {
             connection
                 .execute(
-                    "UPDATE songs SET cover_thumbnail_data_url = ?2, updated_at = ?3 \
-                     WHERE path = ?1",
+                    &format!("UPDATE songs SET {column} = ?2, updated_at = ?3 WHERE path = ?1"),
                     params![path, data_url, as_i64(now())],
                 )
                 .map_err(|error| error.to_string())?;
@@ -985,6 +993,9 @@ fn map_batch_task_item(row: &Row<'_>) -> rusqlite::Result<BatchTaskItem> {
 }
 
 fn migrate_schema(connection: &Connection) -> Result<(), String> {
+    let previous_version = connection
+        .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+        .map_err(|error| error.to_string())?;
     connection
         .execute_batch(SCHEMA)
         .map_err(|error| error.to_string())?;
@@ -1025,12 +1036,18 @@ fn migrate_schema(connection: &Connection) -> Result<(), String> {
         "modified_at",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    add_column_if_missing(connection, "songs", "cover_artwork_data_url", "TEXT")?;
     add_column_if_missing(
         connection,
         "library_folders",
         "scan_signature",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    if previous_version > 0 && previous_version < 5 {
+        connection
+            .execute("UPDATE songs SET cover_thumbnail_data_url = NULL", [])
+            .map_err(|error| error.to_string())?;
+    }
     connection
         .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)
         .map_err(|error| error.to_string())
@@ -1098,6 +1115,7 @@ fn upsert_track(
                 replay_gain_track_peak = excluded.replay_gain_track_peak,
                 replay_gain_album_gain = excluded.replay_gain_album_gain,
                 replay_gain_album_peak = excluded.replay_gain_album_peak,
+                cover_thumbnail_data_url = NULL, cover_artwork_data_url = NULL,
                 file_size = excluded.file_size, modified_at = excluded.modified_at,
                 updated_at = excluded.updated_at",
             params![
@@ -1251,7 +1269,7 @@ CREATE TABLE IF NOT EXISTS songs (
     track_number INTEGER, disc_number INTEGER, year TEXT NOT NULL DEFAULT '',
     duration_seconds INTEGER NOT NULL DEFAULT 0, format TEXT NOT NULL DEFAULT '',
     bitrate INTEGER, sample_rate INTEGER, channels INTEGER,
-    cover_data_url TEXT, cover_thumbnail_data_url TEXT,
+    cover_data_url TEXT, cover_thumbnail_data_url TEXT, cover_artwork_data_url TEXT,
     has_lyrics INTEGER NOT NULL DEFAULT 0, has_cover INTEGER NOT NULL DEFAULT 0,
     replay_gain_track_gain TEXT NOT NULL DEFAULT '', replay_gain_track_peak TEXT NOT NULL DEFAULT '',
     replay_gain_album_gain TEXT NOT NULL DEFAULT '', replay_gain_album_peak TEXT NOT NULL DEFAULT '',
@@ -1449,6 +1467,37 @@ mod tests {
                 .expect("schema version should be readable");
             assert_eq!(version, DATABASE_SCHEMA_VERSION);
         });
+    }
+
+    #[test]
+    fn cover_cache_is_invalidated_when_thumbnail_resolution_changes() {
+        let connection = Connection::open_in_memory().unwrap();
+        configure_connection(&connection).unwrap();
+        migrate_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO library_folders (path) VALUES (?1)",
+                ["C:\\Music"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO songs (id, path, folder_path, file_name, cover_thumbnail_data_url) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["cover", "C:\\Music\\cover.flac", "C:\\Music", "cover.flac", "data:image/jpeg;base64,legacy"],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
+
+        migrate_schema(&connection).unwrap();
+
+        let cached: Option<String> = connection
+            .query_row(
+                "SELECT cover_thumbnail_data_url FROM songs WHERE path = ?1",
+                ["C:\\Music\\cover.flac"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(cached.is_none());
     }
 
     #[test]

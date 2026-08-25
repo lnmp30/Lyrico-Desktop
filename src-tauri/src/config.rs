@@ -7,12 +7,13 @@ use std::io::Write;
 use std::path::Path;
 use tauri::AppHandle;
 
-const CONFIG_SCHEMA_VERSION: u32 = 4;
+const CONFIG_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct DesktopSettings {
     pub(crate) search_page_size: u32,
+    pub(crate) replay_gain_target_loudness: f64,
     pub(crate) lyric_format: String,
     pub(crate) lyrics_conversion_mode: String,
     pub(crate) show_translation: bool,
@@ -27,6 +28,7 @@ impl Default for DesktopSettings {
     fn default() -> Self {
         Self {
             search_page_size: 10,
+            replay_gain_target_loudness: -18.0,
             lyric_format: "verbatimLrc".to_string(),
             lyrics_conversion_mode: "none".to_string(),
             show_translation: true,
@@ -70,6 +72,12 @@ pub(crate) fn save_desktop_settings(
     mut settings: DesktopSettings,
 ) -> Result<(), String> {
     settings.search_page_size = settings.search_page_size.clamp(5, 50);
+    if !settings.replay_gain_target_loudness.is_finite()
+        || !(-60.0..=0.0).contains(&settings.replay_gain_target_loudness)
+    {
+        settings.replay_gain_target_loudness =
+            DesktopSettings::default().replay_gain_target_loudness;
+    }
     if !matches!(
         settings.lyric_format.as_str(),
         "plainLrc" | "verbatimLrc" | "enhancedLrc" | "ttml"
@@ -223,5 +231,6 @@ mod tests {
             settings.rename_character_mappings.get("/"),
             Some(&"／".to_string())
         );
+        assert_eq!(settings.replay_gain_target_loudness, -18.0);
     }
 }

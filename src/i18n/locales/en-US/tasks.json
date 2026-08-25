@@ -9,6 +9,23 @@
     "taskSummary": "{{current}}/{{total}} · {{success}} succeeded · {{skipped}} skipped · {{failed}} failed",
     "batchFinished": "Batch finished: {{success}} succeeded, {{skipped}} skipped, {{failed}} failed",
     "batchCancelled": "Batch processing was cancelled",
+    "viewLog": "View log",
+    "logTitle": "Processing log",
+    "loadingLog": "Loading processing log…",
+    "noLogItems": "No matching records",
+    "logStatus": {
+      "succeeded": "Succeeded {{count}}",
+      "failed": "Failed {{count}}",
+      "skipped": "Skipped {{count}}"
+    },
+    "logResult": {
+      "succeeded": "Completed",
+      "failed": "Failed",
+      "skipped": "Skipped",
+      "queued": "Queued",
+      "running": "Running",
+      "cancelled": "Cancelled"
+    },
     "keepLyricsFormat": "Keep format",
     "formatLineOrder": "Format line order",
     "removeTagLines": "Remove tag lines",

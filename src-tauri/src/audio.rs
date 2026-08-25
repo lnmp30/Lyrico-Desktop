@@ -282,7 +282,15 @@ pub(crate) fn read_cover_thumbnail(path: &Path) -> Option<String> {
     let tag = tagged_file
         .primary_tag()
         .or_else(|| tagged_file.first_tag())?;
-    thumbnail_data_url_from_bytes(tag.pictures().first()?.data())
+    cover_preview_data_url_from_bytes(tag.pictures().first()?.data(), 128, 82)
+}
+
+pub(crate) fn read_cover_artwork(path: &Path) -> Option<String> {
+    let tagged_file = lofty::read_from_path(path).ok()?;
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())?;
+    cover_preview_data_url_from_bytes(tag.pictures().first()?.data(), 384, 88)
 }
 
 pub(crate) fn read_embedded_cover(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -419,11 +427,11 @@ fn cover_data_url(tag: &Tag) -> Option<String> {
     Some(format!("data:{mime};base64,{encoded}"))
 }
 
-fn thumbnail_data_url_from_bytes(bytes: &[u8]) -> Option<String> {
+fn cover_preview_data_url_from_bytes(bytes: &[u8], max_size: u32, quality: u8) -> Option<String> {
     let image = image::load_from_memory(bytes).ok()?;
-    let thumbnail = image.thumbnail(128, 128).to_rgb8();
+    let thumbnail = image.thumbnail(max_size, max_size).to_rgb8();
     let mut encoded_thumbnail = Vec::new();
-    JpegEncoder::new_with_quality(&mut encoded_thumbnail, 82)
+    JpegEncoder::new_with_quality(&mut encoded_thumbnail, quality)
         .encode_image(&thumbnail)
         .ok()?;
     Some(format!(

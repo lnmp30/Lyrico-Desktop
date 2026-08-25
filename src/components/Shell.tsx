@@ -1,4 +1,5 @@
 import {
+  ArrowLeftOutlined,
   AppstoreOutlined,
   CloudSyncOutlined,
   CustomerServiceOutlined,
@@ -11,7 +12,7 @@ import {
   TagsOutlined,
   TeamOutlined,
 } from "@ant-design/icons";
-import { Badge, Button, Drawer, Flex, Layout, Menu, Progress, Table, Tooltip, Typography, type MenuProps, type TableColumnsType } from "antd";
+import { Badge, Button, Empty, Flex, Layout, Progress, Tooltip, Typography } from "antd";
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, LibraryFolder, ReplayGainProgress, ScanProgress, ViewKey } from "../app/types";
@@ -48,12 +49,11 @@ export const Shell = memo(function Shell({
   const { t } = useTranslation();
   const replayGainProgress = useReplayGainProgress();
   const [collapsed, setCollapsed] = useState(false);
-  const [selectionDrawerOpen, setSelectionDrawerOpen] = useState(false);
-  const navigationItems: MenuProps["items"] = useMemo(() => [
+  const [selectionPageOpen, setSelectionPageOpen] = useState(false);
+  const navigationGroups = useMemo(() => [
     {
-      type: "group",
       label: t("nav.library"),
-      children: [
+      items: [
         { key: "songs", icon: <CustomerServiceOutlined />, label: t("common.songs") },
         { key: "albums", icon: <AppstoreOutlined />, label: t("common.albums") },
         { key: "artists", icon: <TeamOutlined />, label: t("common.artists") },
@@ -61,9 +61,8 @@ export const Shell = memo(function Shell({
       ],
     },
     {
-      type: "group",
       label: t("nav.tools"),
-      children: [
+      items: [
         { key: "sources", icon: <TagsOutlined />, label: t("common.sources") },
         { key: "tasks", icon: <CloudSyncOutlined />, label: t("common.tasks") },
       ],
@@ -81,15 +80,18 @@ export const Shell = memo(function Shell({
         trigger={null}
         onBreakpoint={setCollapsed}
       >
-
         <nav className="side-navigation" aria-label={t("nav.primary")}>
-          <Menu
-            mode="inline"
-            inlineCollapsed={collapsed}
-            selectedKeys={activeView === "settings" ? [] : [activeView]}
-            items={navigationItems}
-            onSelect={({ key }) => onChangeView(key as ViewKey)}
-          />
+          {navigationGroups.map((group) => <section className="side-nav-group" key={group.label}>
+            {!collapsed ? <Text className="side-nav-label" type="secondary">{group.label}</Text> : null}
+            <div className="side-nav-items">
+              {group.items.map((item) => <Tooltip key={item.key} title={collapsed ? item.label : undefined} placement="right">
+                <button className={`side-nav-item${activeView === item.key ? " is-active" : ""}`} type="button" onClick={() => onChangeView(item.key as ViewKey)}>
+                  <span className="side-nav-icon">{item.icon}</span>
+                  {!collapsed ? <span>{item.label}</span> : null}
+                </button>
+              </Tooltip>)}
+            </div>
+          </section>)}
         </nav>
 
         <div className="side-footer">
@@ -119,7 +121,7 @@ export const Shell = memo(function Shell({
                   <UnorderedListOutlined />
                 </Badge>
               }
-              onClick={() => setSelectionDrawerOpen(true)}
+              onClick={() => setSelectionPageOpen(true)}
             >
               {!collapsed && (
                 <span className="side-action-label">
@@ -146,65 +148,38 @@ export const Shell = memo(function Shell({
       <Layout className="app-main">
         {scanProgress && <GlobalScanProgress progress={scanProgress} />}
         {replayGainProgress?.status === "running" && <GlobalReplayGainProgress progress={replayGainProgress} onCancel={onCancelReplayGain} />}
-        <Content className="app-content">{children}</Content>
+        <Content className="app-content">
+        <div className={`shell-content-layer${selectionPageOpen ? " is-hidden" : ""}`}>{children}</div>
+        {selectionPageOpen ? <div className="shell-content-layer selection-content-layer"><SelectionPage
+          tracks={selectedTracks}
+          onClose={() => setSelectionPageOpen(false)}
+          onRemove={onRemoveSelectedTrack}
+          onClear={onClearSelectedTracks}
+          onOpenBatch={() => {
+            setSelectionPageOpen(false);
+            onOpenSelectedBatch();
+          }}
+        /></div> : null}
+        </Content>
       </Layout>
-      <SelectionDrawer
-        open={selectionDrawerOpen}
-        tracks={selectedTracks}
-        onClose={() => setSelectionDrawerOpen(false)}
-        onRemove={onRemoveSelectedTrack}
-        onClear={onClearSelectedTracks}
-        onOpenBatch={() => {
-          setSelectionDrawerOpen(false);
-          onOpenSelectedBatch();
-        }}
-      />
     </Layout>
   );
 });
 
-function SelectionDrawer({ open, tracks, onClose, onRemove, onClear, onOpenBatch }: { open: boolean; tracks: AudioTrack[]; onClose: () => void; onRemove: (path: string) => void; onClear: () => void; onOpenBatch: () => void }) {
+function SelectionPage({ tracks, onClose, onRemove, onClear, onOpenBatch }: { tracks: AudioTrack[]; onClose: () => void; onRemove: (path: string) => void; onClear: () => void; onOpenBatch: () => void }) {
   const { t } = useTranslation();
-  const columns: TableColumnsType<AudioTrack> = [
-    {
-      title: t("details.titleField"),
-      dataIndex: "title",
-      ellipsis: true,
-      render: (value: string, track) => value || track.fileName,
-    },
-    {
-      title: t("details.artist"),
-      dataIndex: "artist",
-      width: 140,
-      ellipsis: true,
-      render: (value: string) => value || t("common.unknownArtist"),
-    },
-    {
-      key: "remove",
-      width: 52,
-      align: "center",
-      render: (_, track) => (
-        <Tooltip title={t("common.remove")}>
-          <Button type="text" danger aria-label={t("common.remove")} icon={<DeleteOutlined />} onClick={() => onRemove(track.path)} />
-        </Tooltip>
-      ),
-    },
-  ];
   return (
-    <Drawer
-      title={t("selection.drawerTitle", { count: tracks.length })}
-      width={480}
-      open={open}
-      onClose={onClose}
-      footer={
-        <Flex justify="space-between" gap={12}>
-          <Button disabled={tracks.length === 0} onClick={onClear}>{t("selection.clear")}</Button>
-          <Button type="primary" disabled={tracks.length === 0} onClick={onOpenBatch}>{t("selection.batch")}</Button>
-        </Flex>
-      }
-    >
-      <Table rowKey="path" size="small" pagination={false} columns={columns} dataSource={tracks} locale={{ emptyText: t("selection.empty") }} />
-    </Drawer>
+    <div className="workspace page-stack detail-subpage selection-page">
+      <header className="subpage-toolbar">
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={onClose}>{t("common.back")}</Button>
+        <Text strong>{t("selection.drawerTitle", { count: tracks.length })}</Text>
+      </header>
+      {tracks.length ? <div className="selection-dialog-list">{tracks.map((track) => <div className="selection-dialog-row" key={track.path}>
+        <div className="track-title-cell"><Text strong ellipsis={{ tooltip: track.title || track.fileName }}>{track.title || track.fileName}</Text><Text type="secondary" ellipsis={{ tooltip: track.artist }}>{track.artist || t("common.unknownArtist")}</Text></div>
+        <Tooltip title={t("common.remove")}><Button type="text" danger aria-label={t("common.remove")} icon={<DeleteOutlined />} onClick={() => onRemove(track.path)} /></Tooltip>
+      </div>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("selection.empty")} />}
+      <footer className="selection-page-footer"><Flex justify="space-between" gap={12}><Button disabled={tracks.length === 0} onClick={onClear}>{t("selection.clear")}</Button><Button type="primary" disabled={tracks.length === 0} onClick={onOpenBatch}>{t("selection.batch")}</Button></Flex></footer>
+    </div>
   );
 }
 

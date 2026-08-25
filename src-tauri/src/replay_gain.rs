@@ -12,14 +12,16 @@ use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
-const TARGET_LOUDNESS_LUFS: f64 = -18.0;
+pub(crate) const DEFAULT_TARGET_LOUDNESS_LUFS: f64 = -18.0;
 
 pub(crate) fn analyze_track(
     job_id: String,
     path: &Path,
+    target_loudness_lufs: f64,
     cancelled: &AtomicBool,
     mut on_progress: impl FnMut(f32),
 ) -> Result<ReplayGainAnalysis, String> {
+    validate_target_loudness(target_loudness_lufs)?;
     let file = Box::new(File::open(path).map_err(|error| error.to_string())?);
     let source = MediaSourceStream::new(file, Default::default());
     let mut hint = Hint::new();
@@ -133,18 +135,34 @@ pub(crate) fn analyze_track(
         loudness_lufs,
         sample_count,
         peak,
-        track_gain: format_gain(loudness_lufs),
+        track_gain: format_gain(loudness_lufs, target_loudness_lufs),
         track_peak: format_peak(peak),
-        reference_loudness: "-18 LUFS".to_string(),
+        reference_loudness: format_reference_loudness(target_loudness_lufs),
     })
 }
 
-fn format_gain(loudness_lufs: f64) -> String {
-    format!("{:.2} dB", TARGET_LOUDNESS_LUFS - loudness_lufs)
+fn validate_target_loudness(target_loudness_lufs: f64) -> Result<(), String> {
+    if target_loudness_lufs.is_finite() && (-60.0..=0.0).contains(&target_loudness_lufs) {
+        Ok(())
+    } else {
+        Err("ReplayGain target loudness must be between -60 and 0 LUFS".to_string())
+    }
+}
+
+fn format_gain(loudness_lufs: f64, target_loudness_lufs: f64) -> String {
+    format!("{:.2} dB", target_loudness_lufs - loudness_lufs)
 }
 
 fn format_peak(peak: f64) -> String {
     format!("{:.6}", peak.max(0.0))
+}
+
+fn format_reference_loudness(target_loudness_lufs: f64) -> String {
+    if target_loudness_lufs.fract() == 0.0 {
+        format!("{target_loudness_lufs:.0} LUFS")
+    } else {
+        format!("{target_loudness_lufs:.2} LUFS")
+    }
 }
 
 #[cfg(test)]
@@ -153,7 +171,13 @@ mod tests {
 
     #[test]
     fn formats_mobile_compatible_replay_gain_values() {
-        assert_eq!(format_gain(-9.5), "-8.50 dB");
+        assert_eq!(format_gain(-9.5, -18.0), "-8.50 dB");
+        assert_eq!(format_gain(-9.5, -14.0), "-4.50 dB");
+        assert_eq!(format_reference_loudness(-18.0), "-18 LUFS");
+        assert_eq!(format_reference_loudness(-17.25), "-17.25 LUFS");
+        assert!(validate_target_loudness(-60.0).is_ok());
+        assert!(validate_target_loudness(0.0).is_ok());
+        assert!(validate_target_loudness(-60.1).is_err());
         assert_eq!(format_peak(0.9876544), "0.987654");
         assert_eq!(format_peak(-0.1), "0.000000");
     }
@@ -164,8 +188,14 @@ mod tests {
             return;
         };
         let cancelled = AtomicBool::new(false);
-        let analysis = analyze_track("fixture".into(), Path::new(&path), &cancelled, |_| {})
-            .expect("fixture should be decoded and analyzed");
+        let analysis = analyze_track(
+            "fixture".into(),
+            Path::new(&path),
+            DEFAULT_TARGET_LOUDNESS_LUFS,
+            &cancelled,
+            |_| {},
+        )
+        .expect("fixture should be decoded and analyzed");
 
         assert!(analysis.sample_count > 0);
         assert!(analysis.loudness_lufs.is_finite());

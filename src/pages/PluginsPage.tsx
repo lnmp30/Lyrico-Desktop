@@ -1,4 +1,4 @@
-import { ApiOutlined, AppstoreAddOutlined, ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, SettingOutlined } from "@ant-design/icons";
+import { ApiOutlined, AppstoreAddOutlined, ArrowDownOutlined, ArrowLeftOutlined, ArrowUpOutlined, DeleteOutlined, SettingOutlined } from "@ant-design/icons";
 import { Alert, Avatar, Button, Card, Checkbox, Empty, Flex, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Tag, Tabs, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -76,38 +76,65 @@ export function PluginsPage({ plugins, onPrepareInstall, onInstall, onChangeSour
 
   const manifest = editingPlugin ? JSON.stringify(stripRuntimeFields(editingPlugin), null, 2) : "";
 
+  if (editingPlugin) {
+    return <div className="workspace page-stack detail-subpage plugin-detail-page">
+      <header className="subpage-toolbar">
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => setEditingPluginId(undefined)}>{t("common.back")}</Button>
+        <Text strong>{editingPlugin.name}</Text>
+      </header>
+      <section className="plugin-detail-summary">
+        <PluginIcon plugin={editingPlugin} />
+        <div className="plugin-detail-copy">
+          <Space size={8} wrap><Title level={3}>{editingPlugin.name}</Title><Tag>v{editingPlugin.versionName}</Tag><Tag>API {editingPlugin.apiVersion}</Tag></Space>
+          <Text type="secondary">{editingPlugin.author || t("sources.unknownAuthor")}</Text>
+          {editingPlugin.description ? <Paragraph type="secondary">{editingPlugin.description}</Paragraph> : null}
+        </div>
+      </section>
+      <Tabs className="plugin-detail-tabs" items={[
+        { key: "configuration", label: t("sources.configuration"), children: editingPlugin.configFields.length ? <Form layout="vertical" className="source-config-form">
+          {editingPlugin.configFields.filter((field) => dependencyMatches(field.dependency, config)).map((field) => <ConfigField key={field.key} field={field} value={config[field.key] ?? field.defaultValue ?? ""} onChange={(value) => setConfig((current) => ({ ...current, [field.key]: value }))} />)}
+          <Button type="primary" loading={busyAction === "save"} onClick={() => void runAction("save", async () => { await onSaveConfig(editingPlugin.id, config); setEditingPluginId(undefined); })}>{t("common.save")}</Button>
+        </Form> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("sources.noConfiguration")} /> },
+        { key: "manifest", label: t("sources.manifest"), children: <pre className="code-preview">{manifest}</pre> },
+      ]} />
+    </div>;
+  }
+
   return (
     <div className="workspace page-stack plugin-manager-page">
-      <Flex justify="space-between" align="start" gap={16} wrap>
+      <Flex className="workspace-page-header" justify="space-between" align="start" gap={16} wrap>
         <Title level={2}>{t("sources.title")}</Title>
         <Button type="primary" icon={<AppstoreAddOutlined />} loading={busyAction === "prepare-install"} onClick={() => void choosePluginArchive()}>{t("sources.install")}</Button>
       </Flex>
 
-      <Card className="plugin-source-type-card" styles={{ body: { paddingBottom: 12 } }}>
-        <Tabs activeKey={sourceKind} onChange={(key) => setSourceKind(key as PluginSourceKind)} items={SOURCE_KINDS.map((kind) => ({ key: kind, label: t(`sources.types.${kind}`) }))} />
-        <Text type="secondary">{t("sources.priorityHint")}</Text>
-      </Card>
+      <div className="plugin-mode-bar" role="tablist">
+        {SOURCE_KINDS.map((kind) => <Button key={kind} type={sourceKind === kind ? "primary" : "text"} role="tab" aria-selected={sourceKind === kind} onClick={() => setSourceKind(kind)}>{t(`sources.types.${kind}`)}</Button>)}
+      </div>
 
-      {visiblePlugins.length ? <Space orientation="vertical" size={12} className="full-width">
+      {visiblePlugins.length ? <section className="plugin-workspace">
+        <div className="plugin-workspace-heading">
+          <Text strong>{t(`sources.types.${sourceKind}`)}</Text>
+          <Text type="secondary">{t("sources.priorityHint")}</Text>
+        </div>
         {visiblePlugins.map((plugin, index) => {
           const enabled = isPluginSourceEnabled(plugin, sourceKind);
           const orderBusy = busyAction?.startsWith("order:");
-          return <Card key={plugin.id} className="plugin-source-card">
-            <Flex align="center" gap={14} wrap>
+          return <div key={plugin.id} className={`plugin-row${enabled ? " is-enabled" : ""}`}>
+            <Flex align="center" gap={14}>
               <PluginIcon plugin={plugin} />
               <Flex vertical gap={3} className="plugin-source-card-copy">
                 <Space size={8} wrap><Text strong>{plugin.name}</Text><Tag>v{plugin.versionName}</Tag><Tag>API {plugin.apiVersion}</Tag></Space>
                 <Text type="secondary">{plugin.author || t("sources.unknownAuthor")}</Text>
+                {plugin.description ? <Paragraph type="secondary" ellipsis={{ rows: 1 }} className="plugin-row-description">{plugin.description}</Paragraph> : null}
               </Flex>
-              <Space className="plugin-priority-controls">
-                <Text type="secondary">{t("sources.priority", { value: index + 1 })}</Text>
+              <div className="plugin-row-actions">
+                <Text className="plugin-priority-label" type="secondary">{t("sources.priority", { value: index + 1 })}</Text>
                 <Button aria-label={t("sources.moveUp")} icon={<ArrowUpOutlined />} disabled={index === 0 || orderBusy} onClick={() => void movePlugin(index, -1)} />
                 <Button aria-label={t("sources.moveDown")} icon={<ArrowDownOutlined />} disabled={index === visiblePlugins.length - 1 || orderBusy} onClick={() => void movePlugin(index, 1)} />
-              </Space>
-              <Switch checked={enabled} loading={busyAction === `enabled:${plugin.id}`} checkedChildren={t("common.enabled")} unCheckedChildren={t("common.disabled")} onChange={(next) => void runAction(`enabled:${plugin.id}`, () => onChangeSourceEnabled(plugin.id, sourceKind, next))} />
+                <Switch checked={enabled} loading={busyAction === `enabled:${plugin.id}`} checkedChildren={t("common.enabled")} unCheckedChildren={t("common.disabled")} onChange={(next) => void runAction(`enabled:${plugin.id}`, () => onChangeSourceEnabled(plugin.id, sourceKind, next))} />
+              </div>
             </Flex>
-            {plugin.description ? <Paragraph type="secondary" ellipsis={{ rows: 2 }} className="plugin-card-description">{plugin.description}</Paragraph> : null}
-            <Flex justify="space-between" align="center" gap={12} wrap className="plugin-card-footer">
+            <Flex justify="space-between" align="center" gap={12} wrap className="plugin-row-footer">
               <Space size={[4, 6]} wrap>{normalizedCapabilities(plugin).map((capability) => <Tag key={capability}>{capabilityLabel(capability)}</Tag>)}</Space>
               <Space>
                 <Button icon={<SettingOutlined />} onClick={() => setEditingPluginId(plugin.id)}>{t("sources.configuration")}</Button>
@@ -116,9 +143,9 @@ export function PluginsPage({ plugins, onPrepareInstall, onInstall, onChangeSour
                 </Popconfirm>
               </Space>
             </Flex>
-          </Card>;
+          </div>;
         })}
-      </Space> : <Card><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={plugins.length ? t("sources.noneForType") : t("sources.none")} /></Card>}
+      </section> : <section className="plugin-workspace"><Empty className="page-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description={plugins.length ? t("sources.noneForType") : t("sources.none")} /></section>}
 
       <Modal
         title={t("sources.installTitle")}
@@ -160,15 +187,6 @@ export function PluginsPage({ plugins, onPrepareInstall, onInstall, onChangeSour
         </Space> : null}
       </Modal>
 
-      <Modal title={editingPlugin?.name} open={Boolean(editingPlugin)} width={720} footer={null} onCancel={() => setEditingPluginId(undefined)} destroyOnHidden>
-        {editingPlugin ? <Tabs items={[
-          { key: "configuration", label: t("sources.configuration"), children: editingPlugin.configFields.length ? <Form layout="vertical" className="source-config-form">
-            {editingPlugin.configFields.filter((field) => dependencyMatches(field.dependency, config)).map((field) => <ConfigField key={field.key} field={field} value={config[field.key] ?? field.defaultValue ?? ""} onChange={(value) => setConfig((current) => ({ ...current, [field.key]: value }))} />)}
-            <Button type="primary" loading={busyAction === "save"} onClick={() => void runAction("save", async () => { await onSaveConfig(editingPlugin.id, config); setEditingPluginId(undefined); })}>{t("common.save")}</Button>
-          </Form> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("sources.noConfiguration")} /> },
-          { key: "manifest", label: t("sources.manifest"), children: <pre className="code-preview">{manifest}</pre> },
-        ]} /> : null}
-      </Modal>
     </div>
   );
 }

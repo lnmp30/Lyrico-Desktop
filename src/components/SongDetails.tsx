@@ -1,5 +1,5 @@
-import { ReloadOutlined, SaveOutlined, SearchOutlined } from "@ant-design/icons";
-import { Alert, Avatar, Button, Checkbox, Collapse, Descriptions, Drawer, Empty, Flex, Form, Input, InputNumber, List, Modal, Progress, Rate, Segmented, Select, Space, Spin, Tabs, Typography } from "antd";
+import { ArrowLeftOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from "@ant-design/icons";
+import { Alert, Avatar, Button, Checkbox, Collapse, Descriptions, Empty, Flex, Form, Input, InputNumber, List, Modal, Progress, Rate, Segmented, Select, Space, Spin, Tabs, Typography } from "antd";
 import type { FormInstance } from "antd";
 import type { TFunction } from "i18next";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -72,53 +72,59 @@ export function SongDetails({
     setCoverCropOpen(false);
   }, [track?.path]);
 
+  if (!open) return null;
+
   return (
-    <Drawer
-      title={t("details.title")}
-      placement="right"
-      size={720}
-      open={open}
-      forceRender
-      onClose={onClose}
-      extra={
+    <div className="workspace page-stack detail-subpage song-detail-page">
+      <header className="subpage-toolbar">
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={onClose}>{t("common.back")}</Button>
+        <Flex justify="space-between" align="center" gap={16} className="subpage-actions">
+        <Text strong>{t("details.title")}</Text>
         <Space>
           <Button icon={<ReloadOutlined />} disabled={!track} onClick={onReload}>{t("common.reload")}</Button>
           <Button type="primary" icon={<SaveOutlined />} disabled={!track} loading={saving} onClick={onSave}>{t("common.save")}</Button>
         </Space>
-      }
-    >
+        </Flex>
+      </header>
       {loading ? (
         <div className="drawer-loading"><Spin tip={t("details.loading")} /></div>
       ) : !track ? (
         <Form form={form} component={false} />
       ) : (
         <div className="editor-layout">
-          <header className="editor-media-summary">
-            <TrackArtwork track={coverTrack ?? track} size={112} showDimensions />
-            <Flex vertical gap={8} className="editor-cover-actions">
-              <Space wrap>
-                <Button onClick={onChooseCover}>{t("cover.replace")}</Button>
-                <Button onClick={onUseSameAlbumCover}>{t("cover.sameAlbum")}</Button>
-              </Space>
-              <Space wrap>
-                <Button disabled={!coverTrack?.hasCover} onClick={onExportCover}>{t("cover.export")}</Button>
-                <Button disabled={!activeCoverDataUrl} onClick={() => setCoverCropOpen(true)}>{t("cover.crop")}</Button>
-                <Button danger disabled={!coverTrack?.hasCover} onClick={onRemoveCover}>{t("cover.remove")}</Button>
-                <Button onClick={onRevertCover}>{t("cover.revert")}</Button>
-              </Space>
-            </Flex>
-          </header>
+          <aside className="editor-sidebar">
+            <TrackArtwork track={coverTrack ?? track} size={180} showDimensions />
+            <div className="editor-track-copy">
+              <Text strong ellipsis={{ tooltip: track.title || track.fileName }}>{track.title || track.fileName}</Text>
+              <Text type="secondary" ellipsis={{ tooltip: track.artist }}>{track.artist || t("common.unknownArtist")}</Text>
+              <Text type="secondary" ellipsis={{ tooltip: track.album }}>{track.album || t("common.unknownAlbum")}</Text>
+            </div>
+            <div className="editor-file-summary">
+              <Text type="secondary">{track.format || "—"}</Text>
+              <Text type="secondary">{formatDuration(track.durationSeconds)}</Text>
+            </div>
+            <div className="editor-cover-actions">
+              <Button onClick={onChooseCover}>{t("cover.replace")}</Button>
+              <Button onClick={onUseSameAlbumCover}>{t("cover.sameAlbum")}</Button>
+              <Button disabled={!coverTrack?.hasCover} onClick={onExportCover}>{t("cover.export")}</Button>
+              <Button disabled={!activeCoverDataUrl} onClick={() => setCoverCropOpen(true)}>{t("cover.crop")}</Button>
+              <Button danger disabled={!coverTrack?.hasCover} onClick={onRemoveCover}>{t("cover.remove")}</Button>
+              <Button onClick={onRevertCover}>{t("cover.revert")}</Button>
+            </div>
+          </aside>
 
-          <Tabs
-            className="editor-tabs"
-            activeKey={activeTab}
-            onChange={setActiveTab}
-            items={[
-              { key: "local", label: t("details.localTags"), children: <LocalTagEditor form={form} replayGainProgress={replayGainProgress} onCalculateReplayGain={onCalculateReplayGain} onCancelReplayGain={onCancelReplayGain} onImportLyrics={onImportLyrics} onExportLyrics={onExportLyrics} /> },
-              { key: "online", label: t("details.onlineMatch"), children: <OnlineMatch track={track} plugins={plugins} settings={settings} form={form} onApplied={() => setActiveTab("local")} /> },
-              { key: "file", label: t("details.fileInfo"), children: <FileInformation track={track} /> },
-            ]}
-          />
+          <main className="editor-main">
+            <Tabs
+              className="editor-tabs"
+              activeKey={activeTab}
+              onChange={setActiveTab}
+              items={[
+                { key: "local", label: t("details.localTags"), children: <LocalTagEditor form={form} replayGainProgress={replayGainProgress} onCalculateReplayGain={onCalculateReplayGain} onCancelReplayGain={onCancelReplayGain} onImportLyrics={onImportLyrics} onExportLyrics={onExportLyrics} /> },
+                { key: "online", label: t("details.onlineMatch"), children: <OnlineMatch track={track} plugins={plugins} settings={settings} form={form} onApplied={() => setActiveTab("local")} /> },
+                { key: "file", label: t("details.fileInfo"), children: <FileInformation track={track} /> },
+              ]}
+            />
+          </main>
           <CoverCropModal
             open={coverCropOpen}
             source={activeCoverDataUrl}
@@ -127,7 +133,7 @@ export function SongDetails({
           />
         </div>
       )}
-    </Drawer>
+    </div>
   );
 }
 

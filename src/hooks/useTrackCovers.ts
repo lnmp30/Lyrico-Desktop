@@ -13,7 +13,7 @@ export function useTrackCovers(paths: string[]) {
 
   useEffect(() => {
     const requestedPaths = pathKey ? pathKey.split("\u0000") : [];
-    if (requestedPaths.every((path) => coverCache.has(path))) return;
+    if (requestedPaths.every((path) => coverCache.has(cacheKey(path, false)))) return;
 
     let cancelled = false;
     void preloadTrackCovers(requestedPaths).finally(() => {
@@ -28,51 +28,53 @@ export function useTrackCovers(paths: string[]) {
   return useMemo(() => {
     const covers = new Map<string, string>();
     for (const path of paths) {
-      const cover = coverCache.get(path);
+      const cover = coverCache.get(cacheKey(path, false));
       if (cover) covers.set(path, cover);
     }
     return covers;
   }, [pathKey, version]);
 }
 
-export function useTrackCover(path: string | undefined, enabled = true) {
+export function useTrackCover(path: string | undefined, enabled = true, artwork = false) {
   const [version, setVersion] = useState(0);
   useEffect(() => {
-    if (!enabled || !path || coverCache.has(path)) return;
+    if (!enabled || !path || coverCache.has(cacheKey(path, artwork))) return;
     let cancelled = false;
-    void preloadTrackCovers([path]).finally(() => {
+    void preloadTrackCovers([path], defaultRetryDelays, artwork).finally(() => {
       if (!cancelled) setVersion((value) => value + 1);
     });
     return () => {
       cancelled = true;
     };
-  }, [enabled, path]);
+  }, [artwork, enabled, path]);
   void version;
-  return path ? coverCache.get(path) : undefined;
+  return path ? coverCache.get(cacheKey(path, artwork)) : undefined;
 }
 
 export function updateCachedCover(path: string, coverDataUrl?: string) {
   if (coverDataUrl) {
-    coverCache.set(path, coverDataUrl);
+    coverCache.set(cacheKey(path, false), coverDataUrl);
+    coverCache.set(cacheKey(path, true), coverDataUrl);
   } else {
-    coverCache.delete(path);
+    coverCache.delete(cacheKey(path, false));
+    coverCache.delete(cacheKey(path, true));
   }
 }
 
-export async function preloadTrackCovers(paths: string[], retryDelays = defaultRetryDelays) {
+export async function preloadTrackCovers(paths: string[], retryDelays = defaultRetryDelays, artwork = false) {
   const uniquePaths = [...new Set(paths.filter(Boolean))];
   for (const delay of retryDelays) {
-    const missingPaths = uniquePaths.filter((path) => !coverCache.has(path));
+    const missingPaths = uniquePaths.filter((path) => !coverCache.has(cacheKey(path, artwork)));
     if (missingPaths.length === 0) return;
     if (delay > 0) await wait(delay);
 
-    const pending = requestCoverBatch(missingPaths);
+    const pending = requestCoverBatch(missingPaths, artwork);
     await Promise.allSettled(pending);
   }
 }
 
-export function readCachedTrackCover(path: string) {
-  return coverCache.get(path);
+export function readCachedTrackCover(path: string, artwork = false) {
+  return coverCache.get(cacheKey(path, artwork));
 }
 
 export function resetTrackCoverCache() {
@@ -83,19 +85,20 @@ export function resetTrackCoverCache() {
   flushTimer = undefined;
 }
 
-function requestCoverBatch(paths: string[]) {
+function requestCoverBatch(paths: string[], artwork: boolean) {
   const requests: Promise<void>[] = [];
   for (const path of paths) {
-    if (coverCache.has(path)) continue;
-    let pending = pendingRequests.get(path);
+    const key = cacheKey(path, artwork);
+    if (coverCache.has(key)) continue;
+    let pending = pendingRequests.get(key);
     if (!pending) {
       let resolve: () => void = () => {};
       const promise = new Promise<void>((next) => {
         resolve = next;
       });
       pending = { promise, resolve };
-      pendingRequests.set(path, pending);
-      queuedPaths.add(path);
+      pendingRequests.set(key, pending);
+      queuedPaths.add(key);
     }
     requests.push(pending.promise);
   }
@@ -112,22 +115,34 @@ function scheduleFlush() {
 }
 
 async function flushCoverQueue() {
-  const paths = [...queuedPaths].slice(0, 32);
-  for (const path of paths) queuedPaths.delete(path);
+  const firstKey = queuedPaths.values().next().value as string | undefined;
+  if (!firstKey) return;
+  const artwork = firstKey.startsWith("artwork\u0000");
+  const keys = [...queuedPaths].filter((key) => key.startsWith(artwork ? "artwork\u0000" : "thumbnail\u0000")).slice(0, 16);
+  const paths = keys.map(pathFromKey);
+  for (const key of keys) queuedPaths.delete(key);
   try {
-    const covers = await loadTrackCovers(paths);
+    const covers = artwork ? await loadTrackCovers(paths, true) : await loadTrackCovers(paths);
     for (const cover of covers) {
-      if (cover.coverDataUrl) coverCache.set(cover.path, cover.coverDataUrl);
+      if (cover.coverDataUrl) coverCache.set(cacheKey(cover.path, artwork), cover.coverDataUrl);
     }
   } catch {
     // A failed load remains a cache miss so preloadTrackCovers can retry it.
   } finally {
-    for (const path of paths) {
-      pendingRequests.get(path)?.resolve();
-      pendingRequests.delete(path);
+    for (const key of keys) {
+      pendingRequests.get(key)?.resolve();
+      pendingRequests.delete(key);
     }
     scheduleFlush();
   }
+}
+
+function cacheKey(path: string, artwork: boolean) {
+  return `${artwork ? "artwork" : "thumbnail"}\u0000${path}`;
+}
+
+function pathFromKey(key: string) {
+  return key.slice(key.indexOf("\u0000") + 1);
 }
 
 function wait(milliseconds: number) {

@@ -1,27 +1,14 @@
 import { CheckSquareOutlined, CloudSyncOutlined, CloseOutlined } from "@ant-design/icons";
-import { Button, Flex, Space, Table, Tag, Typography } from "antd";
-import { memo, useCallback, useMemo } from "react";
+import { Button, Checkbox, Flex, Space, Tag, Typography } from "antd";
+import { memo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack } from "../app/types";
 import { formatDuration } from "../utils/format";
 import { TrackArtwork } from "./TrackArtwork";
-import { useResizableColumns, type BoundedColumn } from "../hooks/useResizableColumns";
 
 const { Text } = Typography;
 
-export const LibraryTable = memo(function LibraryTable({
-  tracks,
-  loading,
-  selectedPath,
-  selectedPaths = [],
-  onSelectTrack,
-  onOpenTrack,
-  onChangeSelectedPaths,
-  selectionMode = false,
-  onChangeSelectionMode,
-  onOpenBatch,
-  showSelectionToolbar = true,
-}: {
+export const LibraryTable = memo(function LibraryTable({ tracks, loading, selectedPath, selectedPaths = [], onSelectTrack, onOpenTrack, onChangeSelectedPaths, selectionMode = false, onChangeSelectionMode, onOpenBatch, showSelectionToolbar = true }: {
   tracks: AudioTrack[];
   loading?: boolean;
   selectedPath?: string;
@@ -35,137 +22,61 @@ export const LibraryTable = memo(function LibraryTable({
   showSelectionToolbar?: boolean;
 }) {
   const { t } = useTranslation();
-
-  const baseColumns: BoundedColumn<AudioTrack>[] = useMemo(() => [
-    {
-      title: t("table.song"),
-      dataIndex: "title",
-      key: "title",
-      width: 360,
-      minWidth: 220,
-      maxWidth: 720,
-      sorter: (left, right) => left.title.localeCompare(right.title),
-      render: (_, track) => (
-        <Space size={12} className="song-cell" title={track.fileName}>
-          <TrackArtwork track={track} size={44} />
-          <div className="track-title-cell">
-            <Text strong ellipsis>
-              {track.title || track.fileName}
-            </Text>
-            <Text type="secondary" ellipsis>
-              {track.artist || t("common.unknownArtist")}
-            </Text>
-          </div>
-        </Space>
-      ),
-    },
-    {
-      title: t("table.album"),
-      dataIndex: "album",
-      width: 220,
-      minWidth: 140,
-      maxWidth: 480,
-      responsive: ["lg"],
-      sorter: (left, right) => left.album.localeCompare(right.album),
-      render: (value: string) => value || <Text type="secondary">{t("common.unknownAlbum")}</Text>,
-    },
-    {
-      title: t("table.track"),
-      dataIndex: "trackNumber",
-      align: "right",
-      width: 72,
-      minWidth: 60,
-      maxWidth: 120,
-      responsive: ["lg"],
-      render: (value?: number) => value ?? "—",
-    },
-    {
-      title: t("table.duration"),
-      dataIndex: "durationSeconds",
-      align: "right",
-      width: 100,
-      minWidth: 80,
-      maxWidth: 160,
-      render: (value: number) => formatDuration(value),
-    },
-    {
-      title: t("table.format"),
-      dataIndex: "format",
-      align: "center",
-      width: 90,
-      minWidth: 72,
-      maxWidth: 140,
-      responsive: ["xl"],
-      render: (value: string) => <Tag>{value || "—"}</Tag>,
-    },
-  ], [t]);
-  const { columns, components } = useResizableColumns(baseColumns);
-
-  const rowSelection =
-    selectionMode && onChangeSelectedPaths
-      ? {
-          selectedRowKeys: selectedPaths,
-          preserveSelectedRowKeys: true,
-          onChange: (keys: React.Key[]) => onChangeSelectedPaths(keys.map(String)),
-        }
-      : undefined;
-
-  const rowClassName = useCallback((track: AudioTrack) => (track.path === selectedPath ? "row-focused" : ""), [selectedPath]);
-
-  const onRow = useCallback((track: AudioTrack) => ({
-    onClick: (event: React.MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (target.closest(".ant-table-selection-column, .ant-checkbox-wrapper, .ant-checkbox")) {
-        return;
-      }
-
-      if (selectionMode && onChangeSelectedPaths) {
-        onChangeSelectedPaths(
-          selectedPaths.includes(track.path)
-            ? selectedPaths.filter((path) => path !== track.path)
-            : [...selectedPaths, track.path],
-        );
-      } else {
-        onSelectTrack(track.path);
-        onOpenTrack?.(track);
-      }
-    },
-  }), [selectionMode, onChangeSelectedPaths, selectedPaths, onSelectTrack, onOpenTrack]);
+  const toggleTrack = useCallback((track: AudioTrack) => {
+    if (!onChangeSelectedPaths) return;
+    onChangeSelectedPaths(selectedPaths.includes(track.path) ? selectedPaths.filter((path) => path !== track.path) : [...selectedPaths, track.path]);
+  }, [onChangeSelectedPaths, selectedPaths]);
+  const openTrack = useCallback((track: AudioTrack) => {
+    if (selectionMode) toggleTrack(track);
+    else {
+      onSelectTrack(track.path);
+      onOpenTrack?.(track);
+    }
+  }, [onOpenTrack, onSelectTrack, selectionMode, toggleTrack]);
 
   return (
-    <div className="library-table-shell">
-      {showSelectionToolbar && onChangeSelectedPaths && onChangeSelectionMode && (
+    <div className="library-track-list">
+      {showSelectionToolbar && onChangeSelectedPaths && onChangeSelectionMode ? (
         <Flex className="selection-toolbar" align="center" justify="space-between" gap={12} wrap>
-          {selectionMode ? (
-            <>
-              <Space>
-                <Button icon={<CloseOutlined />} onClick={() => onChangeSelectionMode(false)}>{t("selection.exit")}</Button>
-                <Text>{t("selection.count", { count: selectedPaths.length })}</Text>
-              </Space>
-              <Button type="primary" icon={<CloudSyncOutlined />} disabled={selectedPaths.length === 0} onClick={onOpenBatch}>
-                {t("selection.batch")}
-              </Button>
-            </>
-          ) : (
-            <Button icon={<CheckSquareOutlined />} onClick={() => onChangeSelectionMode(true)}>{t("selection.enter")}</Button>
-          )}
+          {selectionMode ? <>
+            <Space><Button icon={<CloseOutlined />} onClick={() => onChangeSelectionMode(false)}>{t("selection.exit")}</Button><Text>{t("selection.count", { count: selectedPaths.length })}</Text></Space>
+            <Button type="primary" icon={<CloudSyncOutlined />} disabled={selectedPaths.length === 0} onClick={onOpenBatch}>{t("selection.batch")}</Button>
+          </> : <Button icon={<CheckSquareOutlined />} onClick={() => onChangeSelectionMode(true)}>{t("selection.enter")}</Button>}
         </Flex>
-      )}
-    <Table
-      rowKey="path"
-      loading={loading}
-      columns={columns}
-      components={components}
-      dataSource={tracks}
-      size="middle"
-      tableLayout="fixed"
-      pagination={false}
-      virtual={tracks.length > 100}
-      scroll={{ x: 520, y: tracks.length > 100 ? 600 : undefined }}
-      rowSelection={rowSelection}
-      rowClassName={rowClassName}
-      onRow={onRow}
-    />
+      ) : null}
+
+      <div className="track-list-heading" aria-hidden="true">
+        <span>#</span><span>{t("table.song")}</span><span>{t("table.album")}</span><span>{t("table.format")}</span><span>{t("table.duration")}</span>
+      </div>
+      <div className="track-list-rows" aria-busy={loading}>
+        {loading && tracks.length === 0
+          ? Array.from({ length: 8 }, (_, index) => <div className="track-row track-row-skeleton" key={index} />)
+          : tracks.map((track, index) => {
+              const selected = selectedPaths.includes(track.path);
+              return <div
+                className={`track-row${track.path === selectedPath ? " is-current" : ""}${selected ? " is-selected" : ""}`}
+                key={track.path}
+                role="button"
+                tabIndex={0}
+                onClick={() => openTrack(track)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openTrack(track); }
+                }}
+              >
+                <div className="track-row-index">{selectionMode ? <Checkbox checked={selected} onClick={(event) => event.stopPropagation()} onChange={() => toggleTrack(track)} /> : <Text type="secondary">{index + 1}</Text>}</div>
+                <div className="track-row-primary">
+                  <TrackArtwork track={track} size={42} />
+                  <div className="track-title-cell">
+                    <Text strong ellipsis={{ tooltip: track.title || track.fileName }}>{track.title || track.fileName}</Text>
+                    <Text type="secondary" ellipsis={{ tooltip: track.artist }}>{track.artist || t("common.unknownArtist")}</Text>
+                  </div>
+                </div>
+                <Text className="track-row-album" type="secondary" ellipsis={{ tooltip: track.album }}>{track.album || t("common.unknownAlbum")}</Text>
+                <div className="track-row-format">{track.format ? <Tag bordered={false}>{track.format}</Tag> : "—"}</div>
+                <Text className="track-row-duration" type="secondary">{formatDuration(track.durationSeconds)}</Text>
+              </div>;
+            })}
+      </div>
     </div>
   );
 });

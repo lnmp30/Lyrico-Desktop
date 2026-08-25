@@ -1,5 +1,5 @@
 import { CheckSquareOutlined, CloseOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
-import { Button, Card, Empty, Flex, Input, Space, Tooltip, Typography } from "antd";
+import { Button, Empty, Flex, Input, Space, Tooltip, Typography } from "antd";
 import { memo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack } from "../app/types";
@@ -42,10 +42,11 @@ export const SongsPage = memo(function SongsPage({
   const { t } = useTranslation();
   const handleOpenTrack = useCallback((track: AudioTrack) => onOpenDetails(track.path), [onOpenDetails]);
   return (
-    <div className="workspace page-stack">
-      <Flex className="library-page-header" justify="space-between" align="start" gap={16}>
+    <div className="workspace page-stack library-view">
+      <Flex className="library-page-header compact-library-header" justify="space-between" align="center" gap={24}>
         <div className="library-page-header-copy">
           <Title level={2}>{t("songs.title")}</Title>
+          <Text type="secondary">{t("common.songCount", { count: tracks.length })}</Text>
         </div>
         <Space className="library-page-actions">
           <Input
@@ -73,12 +74,7 @@ export const SongsPage = memo(function SongsPage({
         </Space>
       </Flex>
 
-      <Card
-        className="content-card"
-        title={selectedPaths.length ? t("songs.selected", { count: selectedPaths.length }) : t("songs.all")}
-        extra={<Text type="secondary">{t("common.songCount", { count: tracks.length })}</Text>}
-        styles={{ body: { padding: 0 } }}
-      >
+      <section className="library-list-section">
         {selectionMode ? <LibrarySelectionToolbar selectedCount={selectedPaths.length} onOpenBatch={onOpenBatch} /> : null}
         {tracks.length === 0 && !loading ? (
           <Empty className="page-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("songs.empty")} />
@@ -97,7 +93,7 @@ export const SongsPage = memo(function SongsPage({
             showSelectionToolbar={false}
           />
         )}
-      </Card>
+      </section>
     </div>
   );
 });

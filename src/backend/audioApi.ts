@@ -51,8 +51,8 @@ export type TrackCover = {
   coverDataUrl: string;
 };
 
-export async function loadTrackCovers(paths: string[]) {
-  return invoke<TrackCover[]>("load_track_covers", { paths });
+export async function loadTrackCovers(paths: string[], artwork = false) {
+  return invoke<TrackCover[]>("load_track_covers", { paths, artwork });
 }
 
 export async function loadArtistSplitConfig() {
@@ -83,8 +83,8 @@ export async function getStorageInfo() {
   return invoke<StorageInfo>("get_storage_info");
 }
 
-export async function analyzeReplayGain(path: string, jobId: string) {
-  return invoke<ReplayGainAnalysis>("analyze_replay_gain", { path, jobId });
+export async function analyzeReplayGain(path: string, jobId: string, targetLoudnessLufs: number) {
+  return invoke<ReplayGainAnalysis>("analyze_replay_gain", { path, jobId, targetLoudnessLufs });
 }
 
 export async function cancelReplayGain(jobId: string) {

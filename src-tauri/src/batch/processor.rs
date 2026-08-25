@@ -75,19 +75,36 @@ impl BatchProcessor for ReplayGainProcessor {
         }
 
         let job_id = format!("{}:{}", context.task.task_id, context.item.item_id);
-        let analysis = analyze_track(job_id.clone(), path, context.cancelled, |progress| {
-            on_progress(f64::from(progress));
-            let _ = context.app.emit(
-                "replay-gain-progress",
-                ReplayGainProgress {
-                    job_id: job_id.clone(),
-                    path: context.item.song_path.clone(),
-                    percent: (progress * 100.0).round() as u8,
-                    status: "running".to_string(),
-                    message: None,
-                },
-            );
-        })
+        let target_loudness = context
+            .task
+            .config_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|config| {
+                config
+                    .get("targetLoudness")
+                    .and_then(serde_json::Value::as_f64)
+            })
+            .unwrap_or(crate::replay_gain::DEFAULT_TARGET_LOUDNESS_LUFS);
+        let analysis = analyze_track(
+            job_id.clone(),
+            path,
+            target_loudness,
+            context.cancelled,
+            |progress| {
+                on_progress(f64::from(progress));
+                let _ = context.app.emit(
+                    "replay-gain-progress",
+                    ReplayGainProgress {
+                        job_id: job_id.clone(),
+                        path: context.item.song_path.clone(),
+                        percent: (progress * 100.0).round() as u8,
+                        status: "running".to_string(),
+                        message: None,
+                    },
+                );
+            },
+        )
         .map_err(|error| {
             if context.cancelled.load(Ordering::Relaxed)
                 || error.to_lowercase().contains("cancelled")
