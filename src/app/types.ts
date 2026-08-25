@@ -120,6 +120,7 @@ export type DesktopSettings = {
   onlyTranslationIfAvailable: boolean;
   removeEmptyLyricLines: boolean;
   renameCharacterMappings: Record<string, string>;
+  theme: "light" | "dark" | "system";
 };
 
 export type PluginCapability = "searchSongs" | "getLyrics" | "searchCovers";

@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::Path;
 use tauri::AppHandle;
 
-const CONFIG_SCHEMA_VERSION: u32 = 3;
+const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -20,6 +20,7 @@ pub(crate) struct DesktopSettings {
     pub(crate) only_translation_if_available: bool,
     pub(crate) remove_empty_lyric_lines: bool,
     pub(crate) rename_character_mappings: BTreeMap<String, String>,
+    pub(crate) theme: String,
 }
 
 impl Default for DesktopSettings {
@@ -33,6 +34,7 @@ impl Default for DesktopSettings {
             only_translation_if_available: false,
             remove_empty_lyric_lines: true,
             rename_character_mappings: default_rename_character_mappings(),
+            theme: "system".to_string(),
         }
     }
 }
@@ -83,6 +85,12 @@ pub(crate) fn save_desktop_settings(
     settings.rename_character_mappings = normalize_rename_character_mappings(std::mem::take(
         &mut settings.rename_character_mappings,
     ));
+    if !matches!(
+        settings.theme.as_str(),
+        "light" | "dark" | "system"
+    ) {
+        settings.theme = DesktopSettings::default().theme;
+    }
     let mut config = load_config(app)?;
     config.schema_version = CONFIG_SCHEMA_VERSION;
     config.settings = settings;

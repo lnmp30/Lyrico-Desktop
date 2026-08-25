@@ -53,7 +53,13 @@
     "includeRomanization": "Include romanization",
     "includeRomanizationHint": "Write the romanized track when the plugin provides one.",
     "removeEmptyLyricLines": "Remove empty lyric lines",
-    "removeEmptyLyricLinesHint": "Clean empty lines after plugin lyrics are encoded."
+    "removeEmptyLyricLinesHint": "Clean empty lines after plugin lyrics are encoded.",
+    "theme": "Appearance",
+    "themeMode": "Theme",
+    "themeModeHint": "Choose between light, dark, or follow your system setting.",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "themeSystem": "System default"
   },
   "artistSplit": {
     "title": "Artist splitting",

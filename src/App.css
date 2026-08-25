@@ -327,6 +327,22 @@ textarea {
   display: none;
 }
 
+.side-panel.ant-layout-sider-collapsed .ant-menu-inline-collapsed {
+  width: 76px;
+}
+
+.side-panel.ant-layout-sider-collapsed .ant-menu-inline-collapsed > .ant-menu-item,
+.side-panel.ant-layout-sider-collapsed
+  .ant-menu-inline-collapsed
+  > .ant-menu-item-group
+  > .ant-menu-item-group-list
+  > .ant-menu-item {
+  width: 40px;
+  margin-inline: 18px;
+  padding-inline: 0;
+  justify-content: center;
+}
+
 .side-footer {
   display: flex;
   flex: 0 0 auto;

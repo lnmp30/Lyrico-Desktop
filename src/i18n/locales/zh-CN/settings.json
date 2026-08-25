@@ -53,7 +53,13 @@
     "includeRomanization": "写入罗马音",
     "includeRomanizationHint": "插件返回罗马音轨道时一并写入。",
     "removeEmptyLyricLines": "移除歌词空行",
-    "removeEmptyLyricLinesHint": "插件歌词编码完成后清理空行。"
+    "removeEmptyLyricLinesHint": "插件歌词编码完成后清理空行。",
+    "theme": "外观",
+    "themeMode": "主题",
+    "themeModeHint": "选择浅色、深色或跟随系统设置。",
+    "themeLight": "浅色",
+    "themeDark": "深色",
+    "themeSystem": "跟随系统"
   },
   "artistSplit": {
     "title": "艺术家拆分",

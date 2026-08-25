@@ -55,6 +55,17 @@ export function SettingsPage({
                       ]}
                     />
                   </SettingRow>
+                  <SettingRow title={t("settings.themeMode")} description={t("settings.themeModeHint")}>
+                    <Select<DesktopSettings["theme"]>
+                      value={settings.theme}
+                      onChange={(value) => update("theme", value)}
+                      options={[
+                        { value: "light", label: t("settings.themeLight") },
+                        { value: "dark", label: t("settings.themeDark") },
+                        { value: "system", label: t("settings.themeSystem") },
+                      ]}
+                    />
+                  </SettingRow>
                 </SettingsSection>
               ),
             },
