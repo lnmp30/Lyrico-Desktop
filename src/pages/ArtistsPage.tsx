@@ -85,7 +85,6 @@ export const ArtistsPage = memo(function ArtistsPage({
       <Flex className="library-page-header" justify="space-between" align="start" gap={16}>
         <div className="library-page-header-copy">
           <Title level={2}>{t("artists.title")}</Title>
-          <Text type="secondary">{t("artists.description")}</Text>
         </div>
         <Space className="library-page-actions">
           <Input allowClear className="page-search" prefix={<SearchOutlined />} placeholder={t("search.placeholder", { scope: t("search.artists") })} value={query} onChange={(event) => onChangeQuery(event.target.value)} />

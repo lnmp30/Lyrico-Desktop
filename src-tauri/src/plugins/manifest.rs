@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
-pub(crate) const PLUGIN_API_VERSION: u32 = 3;
+pub(crate) const MIN_PLUGIN_API_VERSION: u32 = 1;
+pub(crate) const PLUGIN_API_VERSION: u32 = 4;
+pub(crate) const MIN_HOST_API_VERSION: u32 = 1;
 pub(crate) const HOST_API_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,11 +71,27 @@ pub(crate) struct SourcePlugin {
     pub(crate) plugin_dir: String,
     pub(crate) icon_path: Option<String>,
     pub(crate) icon_data_url: Option<String>,
-    pub(crate) enabled: bool,
-    pub(crate) sort_order: i32,
+    pub(crate) source_states: BTreeMap<String, PluginSourceState>,
     pub(crate) installed_at: String,
     pub(crate) updated_at: String,
     pub(crate) config: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginSourceState {
+    pub(crate) enabled: bool,
+    pub(crate) priority: i32,
+}
+
+impl SourcePlugin {
+    pub(crate) fn source_state(&self, kind: &str) -> Option<&PluginSourceState> {
+        self.source_states.get(kind)
+    }
+
+    pub(crate) fn is_enabled_anywhere(&self) -> bool {
+        self.source_states.values().any(|state| state.enabled)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +106,23 @@ pub(crate) struct PluginInstallFailure {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PluginInstallResult {
     pub(crate) installed: Vec<SourcePlugin>,
+    pub(crate) failed: Vec<PluginInstallFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginInstallPreviewCandidate {
+    pub(crate) manifest: PluginManifest,
+    pub(crate) relative_root: String,
+    pub(crate) conflict: String,
+    pub(crate) existing_version_name: Option<String>,
+    pub(crate) icon_data_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginInstallPreview {
+    pub(crate) candidates: Vec<PluginInstallPreviewCandidate>,
     pub(crate) failed: Vec<PluginInstallFailure>,
 }
 

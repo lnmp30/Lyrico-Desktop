@@ -28,7 +28,7 @@
 在线搜索不硬编码在应用本体中，而是由 JavaScript 插件提供，与移动端插件通用。
 
 
-插件开发与格式说明请阅读 [Lyrico 插件文档](https://replica0110.github.io/Lyrico/plugins/overview.html)，插件仓库见 [Lyrico-Plugins](https://github.com/Replica0110/Lyrico-Plugins)。第三方插件能够执行网络请求并读取其配置，只应安装可信来源的插件。
+桌面端支持插件协议 API1–API4（Platform Host API 3）。API4 可提供不依赖歌曲搜索的独立歌词候选和封面候选，标签、歌词、封面入口可分别启用。插件开发与格式说明请阅读 [Lyrico 插件文档](https://replica0110.github.io/Lyrico/plugins/overview.html)，插件仓库见 [Lyrico-Plugins](https://github.com/Replica0110/Lyrico-Plugins)。第三方插件能够执行网络请求并读取其配置，只应安装可信来源的插件。
 
 ## 技术架构
 

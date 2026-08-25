@@ -28,10 +28,7 @@ export function SettingsPage({
 
   return (
     <div className="workspace page-stack settings-view">
-      <div>
-        <Title level={2}>{t("settings.title")}</Title>
-        <Text type="secondary">{t("settings.descriptionEffective")}</Text>
-      </div>
+      <Title level={2}>{t("settings.title")}</Title>
 
       <Card className="content-card settings-card" styles={{ body: { padding: 0 } }}>
         <Tabs
@@ -55,7 +52,7 @@ export function SettingsPage({
                       ]}
                     />
                   </SettingRow>
-                  <SettingRow title={t("settings.themeMode")} description={t("settings.themeModeHint")}>
+                  <SettingRow title={t("settings.themeMode")}>
                     <Select<DesktopSettings["theme"]>
                       value={settings.theme}
                       onChange={(value) => update("theme", value)}

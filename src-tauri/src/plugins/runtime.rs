@@ -1,9 +1,10 @@
 use super::manifest::SourcePlugin;
+use super::manifest::{HOST_API_VERSION, PLUGIN_API_VERSION};
 use aes::Aes128;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use cipher::block_padding::Pkcs7;
-use cipher::{BlockDecryptMut, BlockEncryptMut, KeyInit};
+use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyInit};
 use ecb::{Decryptor, Encryptor};
 use flate2::read::ZlibDecoder;
 use md5::{Digest, Md5};
@@ -30,8 +31,8 @@ pub(crate) fn invoke(
     function_name: &str,
     request: Value,
 ) -> Result<Value, String> {
-    if !plugin.enabled {
-        return Err("Plugin is disabled".to_string());
+    if !plugin.is_enabled_anywhere() {
+        return Err("Plugin is disabled for every search type".to_string());
     }
     let plugin_lock = {
         let mut locks = PLUGIN_LOCKS
@@ -50,12 +51,16 @@ pub(crate) fn invoke(
     if !SUPPORTED_FUNCTIONS.contains(&function_name) {
         return Err(format!("Unsupported plugin function: {function_name}"));
     }
-    if !plugin
-        .manifest
-        .capabilities
-        .iter()
-        .any(|capability| capability == function_name)
-    {
+    let declares_function = if plugin.manifest.capabilities.is_empty() {
+        function_name == "searchSongs"
+    } else {
+        plugin
+            .manifest
+            .capabilities
+            .iter()
+            .any(|capability| capability == function_name)
+    };
+    if !declares_function {
         return Err(format!(
             "Plugin does not declare the {function_name} capability"
         ));
@@ -200,7 +205,7 @@ impl HostApi {
                 env!("CARGO_PKG_VERSION")
             ))),
             "runtime.info" => Ok(
-                json!({"pluginApiVersion":3,"hostApiVersion":3,"engine":"quickjs","engineVersion":null,"supportedHostApis":SUPPORTED_HOST_APIS}),
+                json!({"pluginApiVersion":PLUGIN_API_VERSION,"hostApiVersion":HOST_API_VERSION,"engine":"quickjs","engineVersion":null,"supportedHostApis":SUPPORTED_HOST_APIS}),
             ),
             "log.debug" | "log.warn" | "log.error" => {
                 eprintln!(
@@ -231,10 +236,12 @@ impl HostApi {
                 self.save_cache()?;
                 Ok(Value::String(String::new()))
             }
-            "crypto.md5" => Ok(Value::String(format!(
-                "{:x}",
+            "crypto.md5" => Ok(Value::String(
                 Md5::digest(string(&payload, "text").as_bytes())
-            ))),
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            )),
             "crypto.aesEcbPkcs5EncryptBase64" => Ok(Value::String(STANDARD.encode(aes_encrypt(
                 &string(&payload, "text"),
                 &string(&payload, "key"),
@@ -453,13 +460,13 @@ fn http_request_body(payload: &Value) -> Result<Vec<u8>, String> {
 fn aes_encrypt(text: &str, key: &str) -> Result<Vec<u8>, String> {
     Encryptor::<Aes128>::new_from_slice(key.as_bytes())
         .map_err(|error| error.to_string())
-        .map(|cipher| cipher.encrypt_padded_vec_mut::<Pkcs7>(text.as_bytes()))
+        .map(|cipher| cipher.encrypt_padded_vec::<Pkcs7>(text.as_bytes()))
 }
 fn aes_decrypt(base64: &str, key: &str) -> Result<String, String> {
     let bytes = decode_standard(base64)?;
     let plain = Decryptor::<Aes128>::new_from_slice(key.as_bytes())
         .map_err(|error| error.to_string())?
-        .decrypt_padded_vec_mut::<Pkcs7>(&bytes)
+        .decrypt_padded_vec::<Pkcs7>(&bytes)
         .map_err(|error| error.to_string())?;
     String::from_utf8(plain).map_err(|error| error.to_string())
 }
@@ -574,7 +581,8 @@ const HOST_BOOTSTRAP: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::manifest::{PluginManifest, SourcePlugin};
+    use crate::plugins::manifest::{PluginManifest, PluginSourceState, SourcePlugin};
+    use std::collections::BTreeMap;
 
     #[test]
     fn loads_include_scripts_before_entry_and_calls_host_api() {
@@ -601,12 +609,31 @@ mod tests {
     }
 
     #[test]
+    fn exposes_api4_protocol_and_keeps_empty_capabilities_legacy_compatible() {
+        let root = std::env::temp_dir().join(format!("lyrico-plugin-api4-{}", now_ms()));
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("source.js"),
+            "function searchSongs() { return [Platform.runtime.getInfo()]; }",
+        )
+        .unwrap();
+        let mut plugin = fixture_plugin(&root, true);
+        plugin.manifest.capabilities.clear();
+
+        let result = invoke(&plugin, "searchSongs", json!({})).unwrap();
+
+        assert_eq!(result[0]["pluginApiVersion"], 4);
+        assert_eq!(result[0]["hostApiVersion"], 3);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn refuses_disabled_plugin() {
         let root = std::env::temp_dir().join(format!("lyrico-plugin-disabled-{}", now_ms()));
         let plugin = fixture_plugin(&root, false);
         assert_eq!(
             invoke(&plugin, "searchSongs", json!({})).unwrap_err(),
-            "Plugin is disabled"
+            "Plugin is disabled for every search type"
         );
     }
 
@@ -616,13 +643,13 @@ mod tests {
         let root = PathBuf::from(std::env::var("LYRICO_MOBILE_PLUGIN_DIR").unwrap());
         let manifest: PluginManifest =
             serde_json::from_str(&fs::read_to_string(root.join("manifest.json")).unwrap()).unwrap();
+        let source_states = enabled_source_states(&manifest.capabilities);
         let plugin = SourcePlugin {
             manifest,
             plugin_dir: root.to_string_lossy().to_string(),
             icon_path: None,
             icon_data_url: None,
-            enabled: true,
-            sort_order: 0,
+            source_states,
             installed_at: String::new(),
             updated_at: String::new(),
             config: json!({}),
@@ -637,6 +664,31 @@ mod tests {
             result.as_array().is_some_and(|items| !items.is_empty()),
             "{result}"
         );
+        if plugin.manifest.api_version >= 4
+            && plugin
+                .manifest
+                .capabilities
+                .iter()
+                .any(|capability| capability == "getLyrics")
+        {
+            let lyrics = invoke(
+                &plugin,
+                "getLyrics",
+                json!({"song":result[0],"page":1,"pageSize":3,"config":plugin.config}),
+            )
+            .unwrap();
+            let candidates = lyrics.as_array().expect("API4 lyrics must be an array");
+            assert!(!candidates.is_empty(), "{lyrics}");
+            for key in ["ti", "ar", "al", "date"] {
+                assert!(
+                    candidates[0]["tags"][key]
+                        .as_str()
+                        .is_some_and(|value| !value.trim().is_empty()),
+                    "missing tags.{key}: {}",
+                    candidates[0]
+                );
+            }
+        }
     }
 
     #[test]
@@ -682,31 +734,73 @@ mod tests {
     }
 
     fn fixture_plugin(root: &Path, enabled: bool) -> SourcePlugin {
+        let manifest = PluginManifest {
+            id: "com.example.test".to_string(),
+            name: "Test".to_string(),
+            version_code: 1,
+            version_name: "1.0.0".to_string(),
+            author: String::new(),
+            description: String::new(),
+            api_version: 3,
+            min_host_api_version: 3,
+            entry: "source.js".to_string(),
+            include_dirs: vec!["lib".to_string()],
+            icon: None,
+            capabilities: vec!["searchSongs".to_string()],
+            config_fields: vec![],
+        };
+        let source_states = if enabled {
+            enabled_source_states(&manifest.capabilities)
+        } else {
+            Default::default()
+        };
         SourcePlugin {
-            manifest: PluginManifest {
-                id: "com.example.test".to_string(),
-                name: "Test".to_string(),
-                version_code: 1,
-                version_name: "1.0.0".to_string(),
-                author: String::new(),
-                description: String::new(),
-                api_version: 3,
-                min_host_api_version: 3,
-                entry: "source.js".to_string(),
-                include_dirs: vec!["lib".to_string()],
-                icon: None,
-                capabilities: vec!["searchSongs".to_string()],
-                config_fields: vec![],
-            },
+            manifest,
             plugin_dir: root.to_string_lossy().to_string(),
             icon_path: None,
             icon_data_url: None,
-            enabled,
-            sort_order: 0,
+            source_states,
             installed_at: String::new(),
             updated_at: String::new(),
             config: json!({}),
         }
+    }
+
+    fn enabled_source_states(capabilities: &[String]) -> BTreeMap<String, PluginSourceState> {
+        let capabilities = if capabilities.is_empty() {
+            vec!["searchSongs"]
+        } else {
+            capabilities.iter().map(String::as_str).collect()
+        };
+        let supports = |capability: &str| capabilities.contains(&capability);
+        let mut kinds = Vec::new();
+        if ["searchSongs", "getLyrics", "searchCovers"]
+            .iter()
+            .all(|capability| supports(capability))
+        {
+            kinds.push("aggregated");
+        }
+        if supports("searchSongs") {
+            kinds.push("metadata");
+        }
+        if supports("getLyrics") {
+            kinds.push("lyrics");
+        }
+        if supports("searchCovers") {
+            kinds.push("covers");
+        }
+        kinds
+            .into_iter()
+            .map(|kind| {
+                (
+                    kind.to_string(),
+                    PluginSourceState {
+                        enabled: true,
+                        priority: 0,
+                    },
+                )
+            })
+            .collect()
     }
 }
 #[test]

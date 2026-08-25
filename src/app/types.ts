@@ -124,6 +124,7 @@ export type DesktopSettings = {
 };
 
 export type PluginCapability = "searchSongs" | "getLyrics" | "searchCovers";
+export type PluginSourceKind = "aggregated" | "metadata" | "lyrics" | "covers";
 
 export type PluginConfigOption = {
   value: string;
@@ -155,13 +156,12 @@ export type SourcePlugin = {
   entry: string;
   includeDirs: string[];
   icon?: string;
-  enabled: boolean;
   capabilities: PluginCapability[];
   configFields: PluginConfigField[];
   pluginDir: string;
   iconPath?: string;
   iconDataUrl?: string;
-  sortOrder: number;
+  sourceStates: Partial<Record<PluginSourceKind, { enabled: boolean; priority: number }>>;
   installedAt: string;
   updatedAt: string;
   config: Record<string, string>;
@@ -176,6 +176,24 @@ export type PluginInstallFailure = {
 export type PluginInstallResult = {
   installed: SourcePlugin[];
   failed: PluginInstallFailure[];
+};
+
+export type PluginInstallPreviewCandidate = {
+  manifest: Pick<SourcePlugin, "id" | "name" | "versionCode" | "versionName" | "author" | "description" | "apiVersion" | "minHostApiVersion" | "capabilities">;
+  relativeRoot: string;
+  conflict: "new" | "update" | "overwrite" | "downgrade";
+  existingVersionName?: string;
+  iconDataUrl?: string;
+};
+
+export type PluginInstallPreview = {
+  candidates: PluginInstallPreviewCandidate[];
+  failed: PluginInstallFailure[];
+};
+
+export type PluginInstallDraft = {
+  archivePath: string;
+  preview: PluginInstallPreview;
 };
 
 export type PluginSongResult = {
@@ -198,6 +216,7 @@ export type PluginSongResult = {
   picUrl?: string;
   coverUrl?: string;
   artworkUrl?: string;
+  cover_url?: string;
   fields?: Record<string, unknown>;
   internal?: Record<string, unknown>;
 };

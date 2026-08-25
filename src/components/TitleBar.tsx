@@ -1,12 +1,14 @@
 import { MinusOutlined, CloseOutlined, BorderOutlined, BlockOutlined } from "@ant-design/icons";
 import { Button, Typography } from "antd";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import appIcon from "../assets/app-icon.png";
+import appIcon from "../../src-tauri/icons/128x128.png";
 
 const { Text } = Typography;
 
 export function TitleBar() {
+  const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -49,21 +51,21 @@ export function TitleBar() {
           className="titlebar-btn"
           icon={<MinusOutlined />}
           onClick={handleMinimize}
-          aria-label="Minimize"
+          aria-label={t("common.minimize")}
         />
         <Button
           type="text"
           className="titlebar-btn"
           icon={maximized ? <BlockOutlined /> : <BorderOutlined />}
           onClick={handleMaximize}
-          aria-label={maximized ? "Restore" : "Maximize"}
+          aria-label={maximized ? t("common.restore") : t("common.maximize")}
         />
         <Button
           type="text"
           className="titlebar-btn titlebar-btn-close"
           icon={<CloseOutlined />}
           onClick={handleClose}
-          aria-label="Close"
+          aria-label={t("common.close")}
         />
       </div>
     </div>

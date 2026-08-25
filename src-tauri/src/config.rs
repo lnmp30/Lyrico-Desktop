@@ -85,10 +85,7 @@ pub(crate) fn save_desktop_settings(
     settings.rename_character_mappings = normalize_rename_character_mappings(std::mem::take(
         &mut settings.rename_character_mappings,
     ));
-    if !matches!(
-        settings.theme.as_str(),
-        "light" | "dark" | "system"
-    ) {
+    if !matches!(settings.theme.as_str(), "light" | "dark" | "system") {
         settings.theme = DesktopSettings::default().theme;
     }
     let mut config = load_config(app)?;

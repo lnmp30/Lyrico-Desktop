@@ -1,9 +1,11 @@
 use super::manifest::{
-    PluginInstallFailure, PluginInstallResult, PluginManifest, SourcePlugin, HOST_API_VERSION,
-    PLUGIN_API_VERSION,
+    PluginInstallFailure, PluginInstallPreview, PluginInstallPreviewCandidate, PluginInstallResult,
+    PluginManifest, PluginSourceState, SourcePlugin, HOST_API_VERSION, MIN_HOST_API_VERSION,
+    MIN_PLUGIN_API_VERSION, PLUGIN_API_VERSION,
 };
 use crate::database::{Database, PluginRecord};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
@@ -42,14 +44,9 @@ pub(crate) async fn install_archive(
     plugins_root: &Path,
     archive_path: &Path,
     allow_downgrade: bool,
+    selected_roots: Option<Vec<String>>,
 ) -> Result<PluginInstallResult, String> {
-    if !archive_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
-    {
-        return Err("Plugin package must be a .zip archive".to_string());
-    }
+    validate_archive_path(archive_path)?;
     fs::create_dir_all(plugins_root).map_err(|error| error.to_string())?;
     let import_root = plugins_root.join(format!(".import-{}", unique_suffix()));
     fs::create_dir_all(&import_root).map_err(|error| error.to_string())?;
@@ -67,9 +64,16 @@ pub(crate) async fn install_archive(
             .iter()
             .map(|candidate| candidate.root.clone())
             .collect::<Vec<_>>();
+        let selected_roots = selected_roots.map(|roots| roots.into_iter().collect::<HashSet<_>>());
         let mut installed = Vec::new();
 
         for candidate in candidates {
+            if selected_roots
+                .as_ref()
+                .is_some_and(|roots| !roots.contains(&candidate.relative_root))
+            {
+                continue;
+            }
             if duplicate_ids.contains(&candidate.manifest.id) {
                 failed.push(failure(&candidate, "Duplicate plugin id in archive"));
                 continue;
@@ -97,17 +101,104 @@ pub(crate) async fn install_archive(
     result
 }
 
-pub(crate) async fn set_enabled(
+pub(crate) async fn preview_archive(
+    database: &Database,
+    plugins_root: &Path,
+    archive_path: &Path,
+) -> Result<PluginInstallPreview, String> {
+    validate_archive_path(archive_path)?;
+    fs::create_dir_all(plugins_root).map_err(|error| error.to_string())?;
+    let import_root = plugins_root.join(format!(".preview-{}", unique_suffix()));
+    fs::create_dir_all(&import_root).map_err(|error| error.to_string())?;
+    let result = async {
+        extract_archive(archive_path, &import_root)?;
+        let (candidates, mut failed) = discover_candidates(&import_root)?;
+        let duplicate_ids = duplicate_ids(&candidates);
+        let existing = database
+            .load_plugin_records()
+            .await?
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect::<HashMap<_, _>>();
+        let mut preview = Vec::new();
+        for candidate in candidates {
+            if duplicate_ids.contains(&candidate.manifest.id) {
+                failed.push(failure(&candidate, "Duplicate plugin id in archive"));
+                continue;
+            }
+            let installed_manifest = existing
+                .get(&candidate.manifest.id)
+                .map(|record| {
+                    serde_json::from_str::<PluginManifest>(&record.manifest_json)
+                        .map_err(|error| format!("Installed plugin manifest is invalid: {error}"))
+                })
+                .transpose()?;
+            let conflict = match installed_manifest.as_ref() {
+                None => "new",
+                Some(installed) if candidate.manifest.version_code > installed.version_code => {
+                    "update"
+                }
+                Some(installed) if candidate.manifest.version_code < installed.version_code => {
+                    "downgrade"
+                }
+                Some(_) => "overwrite",
+            };
+            let icon_data_url = candidate.manifest.icon.as_ref().and_then(|icon| {
+                crate::audio::read_image_data_url(&candidate.root.join(icon)).ok()
+            });
+            preview.push(PluginInstallPreviewCandidate {
+                manifest: candidate.manifest,
+                relative_root: candidate.relative_root,
+                conflict: conflict.to_string(),
+                existing_version_name: installed_manifest.map(|manifest| manifest.version_name),
+                icon_data_url,
+            });
+        }
+        Ok(PluginInstallPreview {
+            candidates: preview,
+            failed,
+        })
+    }
+    .await;
+    let _ = fs::remove_dir_all(&import_root);
+    result
+}
+
+fn validate_archive_path(archive_path: &Path) -> Result<(), String> {
+    if archive_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
+        Ok(())
+    } else {
+        Err("Plugin package must be a .zip archive".to_string())
+    }
+}
+
+pub(crate) async fn set_source_enabled(
     database: &Database,
     plugins_root: &Path,
     plugin_id: &str,
+    source_kind: &str,
     enabled: bool,
 ) -> Result<Vec<SourcePlugin>, String> {
     validate_plugin_id(plugin_id)?;
-    if enabled && !plugins_root.join(plugin_id).is_dir() {
-        return Err("Installed plugin directory is missing".to_string());
-    }
-    database.set_plugin_enabled(plugin_id, enabled).await?;
+    database
+        .set_plugin_source_enabled(plugin_id, source_kind, enabled)
+        .await?;
+    load_plugins(database, plugins_root).await
+}
+
+pub(crate) async fn reorder_sources(
+    database: &Database,
+    plugins_root: &Path,
+    source_kind: &str,
+    plugin_ids: Vec<String>,
+) -> Result<Vec<SourcePlugin>, String> {
+    database
+        .reorder_plugin_sources(source_kind, &plugin_ids)
+        .await?;
     load_plugins(database, plugins_root).await
 }
 
@@ -319,25 +410,17 @@ fn validate_manifest(manifest: &PluginManifest) -> Result<(), String> {
     if manifest.version_code < 1 {
         return Err("Plugin versionCode must be >= 1".to_string());
     }
-    if manifest.api_version != PLUGIN_API_VERSION {
+    if !(MIN_PLUGIN_API_VERSION..=PLUGIN_API_VERSION).contains(&manifest.api_version) {
         return Err(format!(
-            "Unsupported plugin apiVersion: {}",
-            manifest.api_version
+            "Unsupported plugin apiVersion: {} (supported: {}..{})",
+            manifest.api_version, MIN_PLUGIN_API_VERSION, PLUGIN_API_VERSION
         ));
     }
-    if manifest.min_host_api_version > HOST_API_VERSION {
+    if !(MIN_HOST_API_VERSION..=HOST_API_VERSION).contains(&manifest.min_host_api_version) {
         return Err(format!(
-            "Plugin requires host API {}",
-            manifest.min_host_api_version
+            "Unsupported minHostApiVersion: {} (supported: {}..{})",
+            manifest.min_host_api_version, MIN_HOST_API_VERSION, HOST_API_VERSION
         ));
-    }
-    if !manifest.capabilities.is_empty()
-        && !manifest
-            .capabilities
-            .iter()
-            .any(|value| value == "searchSongs")
-    {
-        return Err("A source plugin must support searchSongs".to_string());
     }
     for capability in &manifest.capabilities {
         if !["searchSongs", "getLyrics", "searchCovers"].contains(&capability.as_str()) {
@@ -542,13 +625,58 @@ fn source_from_record(record: PluginRecord, plugins_root: &Path) -> Result<Sourc
         .icon
         .as_ref()
         .and_then(|icon| crate::audio::read_image_data_url(&plugin_dir.join(icon)).ok());
+    let capabilities = if manifest.capabilities.is_empty() {
+        vec!["searchSongs"]
+    } else {
+        manifest.capabilities.iter().map(String::as_str).collect()
+    };
+    let supports = |capability: &str| capabilities.contains(&capability);
+    let mut source_states = BTreeMap::new();
+    if ["searchSongs", "getLyrics", "searchCovers"]
+        .iter()
+        .all(|capability| supports(capability))
+    {
+        source_states.insert(
+            "aggregated".to_string(),
+            PluginSourceState {
+                enabled: record.enabled,
+                priority: record.sort_order,
+            },
+        );
+    }
+    if supports("searchSongs") {
+        source_states.insert(
+            "metadata".to_string(),
+            PluginSourceState {
+                enabled: record.metadata_enabled,
+                priority: record.metadata_sort_order,
+            },
+        );
+    }
+    if supports("getLyrics") {
+        source_states.insert(
+            "lyrics".to_string(),
+            PluginSourceState {
+                enabled: record.lyrics_enabled,
+                priority: record.lyrics_sort_order,
+            },
+        );
+    }
+    if supports("searchCovers") {
+        source_states.insert(
+            "covers".to_string(),
+            PluginSourceState {
+                enabled: record.cover_enabled,
+                priority: record.cover_sort_order,
+            },
+        );
+    }
     Ok(SourcePlugin {
         manifest,
         plugin_dir: plugin_dir.to_string_lossy().to_string(),
         icon_path,
         icon_data_url,
-        enabled: record.enabled,
-        sort_order: record.sort_order,
+        source_states,
         installed_at: record.installed_at,
         updated_at: record.updated_at,
         config,
@@ -603,5 +731,82 @@ mod tests {
         assert!(validate_plugin_id("netease").is_err());
         assert!(validate_plugin_id("com.lonx.bad-id").is_err());
         assert!(validate_plugin_id("1com.lonx.plugin").is_err());
+    }
+
+    #[test]
+    fn accepts_zip_archives_case_insensitively() {
+        assert!(validate_archive_path(Path::new("plugin.zip")).is_ok());
+        assert!(validate_archive_path(Path::new("plugin.ZIP")).is_ok());
+        assert!(validate_archive_path(Path::new("plugin.js")).is_err());
+        assert!(validate_archive_path(Path::new("plugin")).is_err());
+    }
+
+    #[test]
+    fn accepts_supported_protocol_range_and_api4_standalone_sources() {
+        let manifest = |api_version, capabilities: Vec<&str>| PluginManifest {
+            id: "com.example.source".to_string(),
+            name: "Example".to_string(),
+            version_code: 1,
+            version_name: "1.0.0".to_string(),
+            author: String::new(),
+            description: String::new(),
+            api_version,
+            min_host_api_version: 1,
+            entry: "source.js".to_string(),
+            include_dirs: vec![],
+            icon: None,
+            capabilities: capabilities.into_iter().map(str::to_string).collect(),
+            config_fields: vec![],
+        };
+
+        assert!(validate_manifest(&manifest(1, vec![])).is_ok());
+        assert!(validate_manifest(&manifest(4, vec!["getLyrics"])).is_ok());
+        assert!(validate_manifest(&manifest(4, vec!["searchCovers"])).is_ok());
+        assert!(validate_manifest(&manifest(5, vec!["searchSongs"])).is_err());
+        assert!(validate_manifest(&manifest(0, vec!["searchSongs"])).is_err());
+    }
+
+    #[test]
+    fn exposes_host_state_only_for_supported_source_kinds() {
+        let manifest = PluginManifest {
+            id: "com.example.lyrics".to_string(),
+            name: "Lyrics".to_string(),
+            version_code: 1,
+            version_name: "1.0.0".to_string(),
+            author: String::new(),
+            description: String::new(),
+            api_version: 4,
+            min_host_api_version: 1,
+            entry: "source.js".to_string(),
+            include_dirs: vec![],
+            icon: None,
+            capabilities: vec!["getLyrics".to_string()],
+            config_fields: vec![],
+        };
+        let source = source_from_record(
+            PluginRecord {
+                id: manifest.id.clone(),
+                manifest_json: serde_json::to_string(&manifest).unwrap(),
+                enabled: true,
+                metadata_enabled: true,
+                lyrics_enabled: true,
+                cover_enabled: true,
+                sort_order: 0,
+                metadata_sort_order: 1,
+                lyrics_sort_order: 2,
+                cover_sort_order: 3,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                settings_json: "{}".to_string(),
+            },
+            Path::new("C:/plugins"),
+        )
+        .unwrap();
+
+        assert_eq!(source.source_states.len(), 1);
+        assert_eq!(source.source_state("lyrics").unwrap().priority, 2);
+        assert!(source.source_state("metadata").is_none());
+        assert!(source.source_state("covers").is_none());
+        assert!(source.source_state("aggregated").is_none());
     }
 }

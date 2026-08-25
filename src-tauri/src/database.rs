@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 2;
+const DATABASE_SCHEMA_VERSION: u32 = 3;
 static NEXT_BATCH_ID: AtomicU64 = AtomicU64::new(1);
 const BATCH_TASK_TYPES: &[&str] = &[
     "matchMetadata",
@@ -36,7 +36,13 @@ pub(crate) struct PluginRecord {
     pub(crate) id: String,
     pub(crate) manifest_json: String,
     pub(crate) enabled: bool,
+    pub(crate) metadata_enabled: bool,
+    pub(crate) lyrics_enabled: bool,
+    pub(crate) cover_enabled: bool,
     pub(crate) sort_order: i32,
+    pub(crate) metadata_sort_order: i32,
+    pub(crate) lyrics_sort_order: i32,
+    pub(crate) cover_sort_order: i32,
     pub(crate) installed_at: String,
     pub(crate) updated_at: String,
     pub(crate) settings_json: String,
@@ -92,7 +98,8 @@ impl Database {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT p.id, p.manifest_json, p.enabled, p.sort_order, p.installed_at, p.updated_at,
+                "SELECT p.id, p.manifest_json, p.enabled, p.metadata_enabled, p.lyrics_enabled, p.cover_enabled,
+                        p.sort_order, p.metadata_sort_order, p.lyrics_sort_order, p.cover_sort_order, p.installed_at, p.updated_at,
                         COALESCE(s.values_json, '{}')
                  FROM source_plugins p
                  LEFT JOIN plugin_settings s ON s.plugin_id = p.id
@@ -105,10 +112,16 @@ impl Database {
                     id: row.get(0)?,
                     manifest_json: row.get(1)?,
                     enabled: row.get::<_, i64>(2)? != 0,
-                    sort_order: row.get(3)?,
-                    installed_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                    settings_json: row.get(6)?,
+                    metadata_enabled: row.get::<_, i64>(3)? != 0,
+                    lyrics_enabled: row.get::<_, i64>(4)? != 0,
+                    cover_enabled: row.get::<_, i64>(5)? != 0,
+                    sort_order: row.get(6)?,
+                    metadata_sort_order: row.get(7)?,
+                    lyrics_sort_order: row.get(8)?,
+                    cover_sort_order: row.get(9)?,
+                    installed_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    settings_json: row.get(12)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -123,7 +136,8 @@ impl Database {
         let connection = self.lock()?;
         connection
             .query_row(
-                "SELECT p.id, p.manifest_json, p.enabled, p.sort_order, p.installed_at, p.updated_at,
+                "SELECT p.id, p.manifest_json, p.enabled, p.metadata_enabled, p.lyrics_enabled, p.cover_enabled,
+                        p.sort_order, p.metadata_sort_order, p.lyrics_sort_order, p.cover_sort_order, p.installed_at, p.updated_at,
                         COALESCE(s.values_json, '{}')
                  FROM source_plugins p
                  LEFT JOIN plugin_settings s ON s.plugin_id = p.id
@@ -134,10 +148,16 @@ impl Database {
                         id: row.get(0)?,
                         manifest_json: row.get(1)?,
                         enabled: row.get::<_, i64>(2)? != 0,
-                        sort_order: row.get(3)?,
-                        installed_at: row.get(4)?,
-                        updated_at: row.get(5)?,
-                        settings_json: row.get(6)?,
+                        metadata_enabled: row.get::<_, i64>(3)? != 0,
+                        lyrics_enabled: row.get::<_, i64>(4)? != 0,
+                        cover_enabled: row.get::<_, i64>(5)? != 0,
+                        sort_order: row.get(6)?,
+                        metadata_sort_order: row.get(7)?,
+                        lyrics_sort_order: row.get(8)?,
+                        cover_sort_order: row.get(9)?,
+                        installed_at: row.get(10)?,
+                        updated_at: row.get(11)?,
+                        settings_json: row.get(12)?,
                     })
                 },
             )
@@ -166,8 +186,10 @@ impl Database {
                 .map_err(|error| error.to_string())?;
             transaction
                 .execute(
-                    "INSERT INTO source_plugins (id, manifest_json, enabled, sort_order, installed_at, updated_at)
-                     VALUES (?1, ?2, 0, ?3, ?4, ?4)
+                    "INSERT INTO source_plugins (
+                        id, manifest_json, enabled, metadata_enabled, lyrics_enabled, cover_enabled,
+                        sort_order, metadata_sort_order, lyrics_sort_order, cover_sort_order, installed_at, updated_at
+                     ) VALUES (?1, ?2, 0, 0, 0, 0, ?3, ?3, ?3, ?3, ?4, ?4)
                      ON CONFLICT(id) DO UPDATE SET manifest_json = excluded.manifest_json, updated_at = excluded.updated_at",
                     params![plugin_id, manifest_json, next_sort_order, timestamp],
                 )
@@ -187,15 +209,17 @@ impl Database {
             .ok_or_else(|| "Installed plugin record was not found".to_string())
     }
 
-    pub(crate) async fn set_plugin_enabled(
+    pub(crate) async fn set_plugin_source_enabled(
         &self,
         plugin_id: &str,
+        source_kind: &str,
         enabled: bool,
     ) -> Result<(), String> {
+        let column = plugin_source_column(source_kind, false)?;
         let connection = self.lock()?;
         let changed = connection
             .execute(
-                "UPDATE source_plugins SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
+                &format!("UPDATE source_plugins SET {column} = ?2, updated_at = ?3 WHERE id = ?1"),
                 params![plugin_id, i64::from(enabled), now().to_string()],
             )
             .map_err(|error| error.to_string())?;
@@ -204,6 +228,36 @@ impl Database {
         } else {
             Err("Plugin was not found".to_string())
         }
+    }
+
+    pub(crate) async fn reorder_plugin_sources(
+        &self,
+        source_kind: &str,
+        plugin_ids: &[String],
+    ) -> Result<(), String> {
+        let column = plugin_source_column(source_kind, true)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let unique = plugin_ids.iter().collect::<std::collections::HashSet<_>>();
+        if unique.len() != plugin_ids.len() {
+            return Err("Plugin priority contains duplicate ids".to_string());
+        }
+        for (order, plugin_id) in plugin_ids.iter().enumerate() {
+            let changed = transaction
+                .execute(
+                    &format!(
+                        "UPDATE source_plugins SET {column} = ?2, updated_at = ?3 WHERE id = ?1"
+                    ),
+                    params![plugin_id, order as i32, now().to_string()],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed != 1 {
+                return Err(format!("Plugin was not found: {plugin_id}"));
+            }
+        }
+        transaction.commit().map_err(|error| error.to_string())
     }
 
     pub(crate) async fn save_plugin_settings(
@@ -940,6 +994,31 @@ fn migrate_schema(connection: &Connection) -> Result<(), String> {
         "file_size",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    let source_columns = [
+        ("metadata_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("lyrics_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("cover_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("metadata_sort_order", "INTEGER NOT NULL DEFAULT 0"),
+        ("lyrics_sort_order", "INTEGER NOT NULL DEFAULT 0"),
+        ("cover_sort_order", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    let had_source_categories = column_exists(connection, "source_plugins", "metadata_enabled")?;
+    for (column, definition) in source_columns {
+        add_column_if_missing(connection, "source_plugins", column, definition)?;
+    }
+    if !had_source_categories {
+        connection
+            .execute_batch(
+                "UPDATE source_plugins SET
+                    metadata_enabled = enabled,
+                    lyrics_enabled = enabled,
+                    cover_enabled = enabled,
+                    metadata_sort_order = sort_order,
+                    lyrics_sort_order = sort_order,
+                    cover_sort_order = sort_order;",
+            )
+            .map_err(|error| error.to_string())?;
+    }
     add_column_if_missing(
         connection,
         "songs",
@@ -957,12 +1036,7 @@ fn migrate_schema(connection: &Connection) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn add_column_if_missing(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> Result<(), String> {
+fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool, String> {
     let mut statement = connection
         .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|error| error.to_string())?;
@@ -971,7 +1045,16 @@ fn add_column_if_missing(
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    if !columns.iter().any(|candidate| candidate == column) {
+    Ok(columns.iter().any(|candidate| candidate == column))
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), String> {
+    if !column_exists(connection, table, column)? {
         connection
             .execute_batch(&format!(
                 "ALTER TABLE {table} ADD COLUMN {column} {definition}"
@@ -1130,6 +1213,20 @@ fn now_millis() -> u128 {
         .as_millis()
 }
 
+fn plugin_source_column(source_kind: &str, sort_order: bool) -> Result<&'static str, String> {
+    match (source_kind, sort_order) {
+        ("aggregated", false) => Ok("enabled"),
+        ("metadata", false) => Ok("metadata_enabled"),
+        ("lyrics", false) => Ok("lyrics_enabled"),
+        ("covers", false) => Ok("cover_enabled"),
+        ("aggregated", true) => Ok("sort_order"),
+        ("metadata", true) => Ok("metadata_sort_order"),
+        ("lyrics", true) => Ok("lyrics_sort_order"),
+        ("covers", true) => Ok("cover_sort_order"),
+        _ => Err(format!("Unsupported plugin source kind: {source_kind}")),
+    }
+}
+
 fn as_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -1191,7 +1288,10 @@ CREATE TABLE IF NOT EXISTS album_song (
 );
 CREATE TABLE IF NOT EXISTS source_plugins (
     id TEXT PRIMARY KEY, manifest_json TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 0, installed_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+    metadata_enabled INTEGER NOT NULL DEFAULT 0, lyrics_enabled INTEGER NOT NULL DEFAULT 0,
+    cover_enabled INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
+    metadata_sort_order INTEGER NOT NULL DEFAULT 0, lyrics_sort_order INTEGER NOT NULL DEFAULT 0,
+    cover_sort_order INTEGER NOT NULL DEFAULT 0, installed_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS plugin_settings (
     plugin_id TEXT PRIMARY KEY, values_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL DEFAULT '',
@@ -1254,6 +1354,83 @@ mod tests {
             assert_eq!(folders.len(), 1);
             assert_eq!(folders[0].path, "C:\\Music");
         });
+    }
+
+    #[test]
+    fn plugin_source_switches_and_priorities_are_independent() {
+        tauri::async_runtime::block_on(async {
+            let database = Database::in_memory().await.unwrap();
+            database
+                .upsert_plugin_record("com.example.one", "{}", "{}")
+                .await
+                .unwrap();
+            database
+                .upsert_plugin_record("com.example.two", "{}", "{}")
+                .await
+                .unwrap();
+            database
+                .set_plugin_source_enabled("com.example.one", "lyrics", true)
+                .await
+                .unwrap();
+            database
+                .reorder_plugin_sources(
+                    "lyrics",
+                    &["com.example.two".into(), "com.example.one".into()],
+                )
+                .await
+                .unwrap();
+
+            let records = database.load_plugin_records().await.unwrap();
+            let one = records
+                .iter()
+                .find(|record| record.id == "com.example.one")
+                .unwrap();
+            let two = records
+                .iter()
+                .find(|record| record.id == "com.example.two")
+                .unwrap();
+            assert!(one.lyrics_enabled);
+            assert!(!one.metadata_enabled);
+            assert_eq!(two.lyrics_sort_order, 0);
+            assert_eq!(one.lyrics_sort_order, 1);
+            assert_eq!(one.metadata_sort_order, 0);
+        });
+    }
+
+    #[test]
+    fn plugin_source_migration_preserves_legacy_enabled_state_and_order() {
+        let connection = Connection::open_in_memory().unwrap();
+        configure_connection(&connection).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE source_plugins (
+                id TEXT PRIMARY KEY, manifest_json TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
+                installed_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+             );
+             INSERT INTO source_plugins (id, enabled, sort_order) VALUES ('com.example.legacy', 1, 7);"
+        ).unwrap();
+
+        migrate_schema(&connection).unwrap();
+
+        let values: (i64, i64, i64, i32, i32, i32) = connection
+            .query_row(
+                "SELECT metadata_enabled, lyrics_enabled, cover_enabled,
+                    metadata_sort_order, lyrics_sort_order, cover_sort_order
+             FROM source_plugins WHERE id = 'com.example.legacy'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(values, (1, 1, 1, 7, 7, 7));
     }
 
     #[test]

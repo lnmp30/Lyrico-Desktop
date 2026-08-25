@@ -70,8 +70,7 @@ fn parse(xml: &str) -> Result<XmlElement, String> {
             }
             Event::Text(text) => {
                 if let Some(parent) = stack.last_mut() {
-                    let decoded = text.decode().map_err(|error| error.to_string())?;
-                    let value = quick_xml::escape::unescape(&decoded)
+                    let value = quick_xml::escape::unescape(text.as_ref())
                         .map_err(|error| error.to_string())?
                         .into_owned();
                     if !value.is_empty() {
@@ -81,10 +80,7 @@ fn parse(xml: &str) -> Result<XmlElement, String> {
             }
             Event::CData(text) => {
                 if let Some(parent) = stack.last_mut() {
-                    let value = text
-                        .decode()
-                        .map_err(|error| error.to_string())?
-                        .into_owned();
+                    let value = text.as_ref().to_string();
                     if !value.is_empty() {
                         parent.children.push(XmlNode::Text(value));
                     }
@@ -102,8 +98,7 @@ fn parse(xml: &str) -> Result<XmlElement, String> {
             }
             Event::GeneralRef(reference) => {
                 if let Some(parent) = stack.last_mut() {
-                    let reference = reference.decode().map_err(|error| error.to_string())?;
-                    let escaped = format!("&{reference};");
+                    let escaped = format!("&{};", reference.as_ref());
                     let value = quick_xml::escape::unescape(&escaped)
                         .map_err(|error| error.to_string())?
                         .into_owned();
@@ -126,15 +121,13 @@ fn parse(xml: &str) -> Result<XmlElement, String> {
 }
 
 fn element_from_start(start: &BytesStart<'_>) -> Result<XmlElement, String> {
-    let name =
-        String::from_utf8(start.name().as_ref().to_vec()).map_err(|error| error.to_string())?;
+    let name = start.name().as_ref().to_string();
     let mut attributes = Vec::new();
     for attribute in start.attributes().with_checks(false) {
         let attribute = attribute.map_err(|error| error.to_string())?;
-        let key = String::from_utf8(attribute.key.as_ref().to_vec())
-            .map_err(|error| error.to_string())?;
+        let key = attribute.key.as_ref().to_string();
         let value = attribute
-            .decoded_and_normalized_value(XmlVersion::Implicit1_0, start.decoder())
+            .normalized_value(XmlVersion::Implicit1_0)
             .map_err(|error| error.to_string())?
             .into_owned();
         attributes.push((key, value));

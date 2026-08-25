@@ -1,4 +1,4 @@
-import { Alert, Checkbox, Form, Select, Space, Switch, Typography } from "antd";
+import { Checkbox, Form, Select, Space, Switch, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 import type { ArtistSplitConfig } from "../app/types";
 import { builtinArtistSeparators, builtinNoSplitArtists } from "../domain/library";
@@ -23,7 +23,6 @@ export function ArtistSplitSettings({
 
   return (
     <Space orientation="vertical" size={20} className="full-width">
-      <Alert showIcon type="info" title={t("artistSplit.liveTitle")} description={t("artistSplit.liveDescription")} />
       <Form layout="vertical" className="artist-split-form">
         <Form.Item label={t("artistSplit.artistSeparator")} extra={t("artistSplit.artistSeparatorHint")}>
           <Select

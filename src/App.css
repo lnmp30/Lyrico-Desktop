@@ -896,6 +896,63 @@ textarea {
   margin-inline-end: 0;
 }
 
+.titlebar-icon {
+  width: 22px;
+  height: 22px;
+  display: block;
+  flex: 0 0 22px;
+  border-radius: 6px;
+}
+
+.plugin-source-type-card .ant-tabs-nav {
+  margin-bottom: 12px;
+}
+
+.plugin-source-description,
+.plugin-card-description {
+  margin-bottom: 8px !important;
+}
+
+.plugin-source-card-copy {
+  min-width: 180px;
+  flex: 1 1 260px;
+}
+
+.plugin-install-candidate {
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.plugin-install-candidate.is-selected {
+  border-color: var(--ant-color-primary);
+  background: var(--ant-color-primary-bg);
+}
+
+.plugin-priority-controls {
+  margin-left: auto;
+}
+
+.plugin-card-description {
+  margin-top: 14px;
+}
+
+.plugin-card-footer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ant-color-border-secondary, rgba(5, 5, 5, 0.06));
+}
+
+@media (max-width: 720px) {
+  .plugin-priority-controls {
+    order: 3;
+    margin-left: 62px;
+  }
+
+  .plugin-source-card .ant-switch {
+    margin-left: auto;
+  }
+}
+
 .source-config-form {
   max-width: 640px;
 }

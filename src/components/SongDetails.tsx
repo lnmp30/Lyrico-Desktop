@@ -4,7 +4,7 @@ import type { FormInstance } from "antd";
 import type { TFunction } from "i18next";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { AudioTrack, DesktopSettings, PluginSongResult, ReplayGainProgress, SourcePlugin, TagForm } from "../app/types";
+import type { AudioTrack, DesktopSettings, PluginSongResult, PluginSourceKind, ReplayGainProgress, SourcePlugin, TagForm } from "../app/types";
 import { fetchRemoteImage, invokeSourcePlugin } from "../backend/audioApi";
 import { extractPlainLyricsText, LYRIC_FORMATS, preferredPluginLyricFormat, processLyricsText, renderPluginLyrics, type LyricFormat } from "../backend/lyricsApi";
 import { formatDuration } from "../utils/format";
@@ -12,6 +12,7 @@ import { useImageDimensions } from "../hooks/useImageDimensions";
 import { CoverCropModal } from "./CoverCropModal";
 import { TrackArtwork } from "./TrackArtwork";
 import { useReplayGainProgress } from "../hooks/useReplayGainProgress";
+import { firstLyricsPayload, isPluginSourceEnabled, normalizeCoverResults, normalizeLyricsCandidates, normalizePluginResults, normalizedCapabilities, pluginSourceOrder } from "../domain/pluginSources";
 
 const { Text } = Typography;
 
@@ -153,14 +154,20 @@ function FileInformation({ track }: { track: AudioTrack }) {
   );
 }
 
-type MatchEntry = { pluginId: string; result: PluginSongResult };
+type MatchEntry = { pluginId: string; result: PluginSongResult; lyricsPayload?: unknown };
 type MatchMode = "overwrite" | "supplement";
+type SearchKind = PluginSourceKind;
+
+const emptyOnlineResults = (): Record<SearchKind, MatchEntry[]> => ({ aggregated: [], metadata: [], lyrics: [], covers: [] });
 
 function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: AudioTrack; plugins: SourcePlugin[]; settings: DesktopSettings; form: FormInstance<TagForm>; onApplied: () => void }) {
   const { t } = useTranslation();
-  const availablePlugins = plugins.filter((plugin) => plugin.enabled && plugin.capabilities.includes("searchSongs"));
+  const [searchKind, setSearchKind] = useState<SearchKind>("aggregated");
+  const availablePlugins = plugins
+    .filter((plugin) => isPluginSourceEnabled(plugin, searchKind))
+    .sort((left, right) => pluginSourceOrder(left, searchKind) - pluginSourceOrder(right, searchKind));
   const [keyword, setKeyword] = useState(`${track.title} ${track.artist}`.trim());
-  const [results, setResults] = useState<MatchEntry[]>([]);
+  const [resultsByKind, setResultsByKind] = useState<Record<SearchKind, MatchEntry[]>>(emptyOnlineResults);
   const [resultTab, setResultTab] = useState("all");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string>();
@@ -182,12 +189,13 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
   const [lyricsFormatting, setLyricsFormatting] = useState(false);
   const lyricsFormatRequest = useRef(0);
   const [busyResult, setBusyResult] = useState<string>();
+  const results = resultsByKind[searchKind];
   const visibleResults = useMemo(() => resultTab === "all" ? results : results.filter((entry) => entry.pluginId === resultTab), [resultTab, results]);
 
   useEffect(() => {
     lyricsFormatRequest.current += 1;
     setKeyword(`${track.title} ${track.artist}`.trim());
-    setResults([]);
+    setResultsByKind(emptyOnlineResults());
     setResultTab("all");
     setError(undefined);
     setBusyResult(undefined);
@@ -196,18 +204,40 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
     setLyricsFormatting(false);
   }, [track.path, track.title, track.artist]);
 
+  useEffect(() => {
+    setResultTab("all");
+    setError(undefined);
+  }, [searchKind]);
+
   async function search() {
     if (!availablePlugins.length || !keyword.trim()) return;
     setSearching(true);
     setError(undefined);
     try {
       const responses = await Promise.allSettled(availablePlugins.map(async (plugin) => {
+        const baseRequest = { keyword: keyword.trim(), page: 1, pageSize: settings.searchPageSize, config: plugin.config };
+        if (searchKind === "covers") {
+          const response = await invokeSourcePlugin<unknown>(plugin.id, "searchCovers", {
+            ...baseRequest,
+            song: localPluginSong(track, plugin.id),
+          });
+          return normalizeCoverResults(response, plugin.apiVersion).map((result) => ({ pluginId: plugin.id, result }));
+        }
+        if (searchKind === "lyrics" && !normalizedCapabilities(plugin).includes("searchSongs")) {
+          const response = await invokeSourcePlugin<unknown>(plugin.id, "getLyrics", {
+            song: localPluginSong(track, plugin.id), page: 1, pageSize: settings.searchPageSize, config: plugin.config,
+          });
+          return normalizeLyricsCandidates(response, plugin.apiVersion).map((candidate) => ({
+            pluginId: plugin.id, result: candidate.result, lyricsPayload: candidate.lyricsPayload,
+          }));
+        }
         const response = await invokeSourcePlugin<unknown>(plugin.id, "searchSongs", {
-          keyword: keyword.trim(), page: 1, pageSize: settings.searchPageSize, separator: "/", config: plugin.config,
+          ...baseRequest, separator: "/",
         });
-        return normalizeSearchResults(response).map((result) => ({ pluginId: plugin.id, result }));
+        return normalizePluginResults(response).map((result) => ({ pluginId: plugin.id, result }));
       }));
-      setResults(responses.flatMap((response) => response.status === "fulfilled" ? response.value : []));
+      const nextResults = responses.flatMap((response) => response.status === "fulfilled" ? response.value : []);
+      setResultsByKind((current) => ({ ...current, [searchKind]: nextResults }));
       const failures = responses.flatMap((response, index) => response.status === "rejected" ? [`${availablePlugins[index].name}: ${String(response.reason)}`] : []);
       setError(failures.length ? failures.join("\n") : undefined);
       setResultTab("all");
@@ -282,17 +312,19 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
 
   async function openLyricsReview(entry: MatchEntry) {
     const { result } = entry;
-    const plugin = availablePlugins.find((candidate) => candidate.id === entry.pluginId);
-    if (!plugin?.capabilities.includes("getLyrics")) return;
+    const plugin = plugins.find((candidate) => candidate.id === entry.pluginId);
+    if (!plugin || !normalizedCapabilities(plugin).includes("getLyrics")) return;
     const request = ++lyricsFormatRequest.current;
     setBusyResult(`lyrics:${entry.pluginId}:${resultId(result)}`);
     setError(undefined);
     try {
-      const lyrics = await invokeSourcePlugin<unknown>(plugin.id, "getLyrics", {
+      const response = entry.lyricsPayload ?? await invokeSourcePlugin<unknown>(plugin.id, "getLyrics", {
         song: { ...result, sourceId: plugin.id, pluginId: plugin.id },
-        config: plugin.config,
+        page: 1, pageSize: settings.searchPageSize, config: plugin.config,
       });
+      const lyrics = entry.lyricsPayload ?? firstLyricsPayload(response);
       if (request !== lyricsFormatRequest.current) return;
+      if (lyrics == null) throw new Error(t("details.lyricsNotFound"));
       const format = settings.lyricFormat ?? preferredPluginLyricFormat(lyrics);
       const text = format ? await formatPluginLyrics(lyrics, format, settings) : "";
       if (request !== lyricsFormatRequest.current) return;
@@ -331,12 +363,15 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
     }
   }
 
-  if (!availablePlugins.length) {
-    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("details.noOnlinePlugins")} />;
-  }
-
   return (
     <Space orientation="vertical" size={16} className="full-width">
+      <Segmented
+        block
+        value={searchKind}
+        options={(["aggregated", "metadata", "lyrics", "covers"] as SearchKind[]).map((kind) => ({ value: kind, label: t(`details.searchKinds.${kind}`) }))}
+        onChange={(value) => setSearchKind(value as SearchKind)}
+      />
+      {!availablePlugins.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("details.noOnlinePluginsForKind")} /> : <>
       <Flex gap={8} wrap>
         <Input.Search value={keyword} prefix={<SearchOutlined />} enterButton={t("details.searchOnline")} loading={searching} onChange={(event) => setKeyword(event.target.value)} onSearch={() => void search()} style={{ flex: 1, minWidth: 260 }} />
       </Flex>
@@ -363,18 +398,19 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
           const title = result.title ?? result.name ?? result.songName ?? t("common.unknownTitle");
           const artist = result.artist ?? result.artists ?? result.singer ?? "";
           const cover = resultCoverUrl(result);
-          const canFetchLyrics = plugin?.capabilities.includes("getLyrics");
+          const canFetchLyrics = Boolean(plugin && normalizedCapabilities(plugin).includes("getLyrics"));
           return (
             <List.Item actions={[
-              <Button key="review" type="link" onClick={() => openReview(entry)}>{t("details.reviewTags")}</Button>,
-              cover ? <Button key="cover" type="link" onClick={() => openCoverReview(entry)}>{t("details.reviewCover")}</Button> : null,
-              canFetchLyrics ? <Button key="lyrics" type="link" loading={busyResult === `lyrics:${entry.pluginId}:${resultId(result)}`} onClick={() => void openLyricsReview(entry)}>{t("details.reviewLyrics")}</Button> : null,
+              searchKind === "aggregated" || searchKind === "metadata" ? <Button key="review" type="link" onClick={() => openReview(entry)}>{t("details.reviewTags")}</Button> : null,
+              cover && (searchKind === "aggregated" || searchKind === "covers") ? <Button key="cover" type="link" onClick={() => openCoverReview(entry)}>{t("details.reviewCover")}</Button> : null,
+              canFetchLyrics && (searchKind === "aggregated" || searchKind === "lyrics") ? <Button key="lyrics" type="link" loading={busyResult === `lyrics:${entry.pluginId}:${resultId(result)}`} onClick={() => void openLyricsReview(entry)}>{t("details.reviewLyrics")}</Button> : null,
             ].filter(Boolean)}>
-              <List.Item.Meta avatar={<Avatar shape="square" size={48} src={cover} />} title={title} description={<Space size={6} wrap><Text type="secondary">{`${Array.isArray(artist) ? artist.join("/") : artist}${result.album || result.albumName ? ` · ${result.album ?? result.albumName}` : ""}`}</Text>{resultTab === "all" ? <Text type="secondary">· {plugin?.name}</Text> : null}</Space>} />
+              <List.Item.Meta avatar={<Avatar shape="square" size={48} src={cover} />} title={title} description={<Space size={6} wrap><Text type="secondary">{`${Array.isArray(artist) ? artist.join("/") : artist}${result.album || result.albumName ? ` · ${result.album ?? result.albumName}` : ""}${result.date ? ` · ${result.date}` : ""}`}</Text>{resultTab === "all" ? <Text type="secondary">· {plugin?.name}</Text> : null}</Space>} />
             </List.Item>
           );
         }}
       />
+      </>}
       <Modal
         title={t("details.matchDialogTitle")}
         open={Boolean(reviewResult)}
@@ -391,7 +427,7 @@ function OnlineMatch({ track, plugins, settings, form, onApplied }: { track: Aud
               size="small"
               column={2}
               items={[
-                { key: "id", label: t("details.sourceId"), children: `${availablePlugins.find((plugin) => plugin.id === reviewPluginId)?.name ?? ""} · ${resultId(reviewResult)}` },
+                { key: "id", label: t("details.sourceId"), children: `${plugins.find((plugin) => plugin.id === reviewPluginId)?.name ?? ""} · ${resultId(reviewResult)}` },
                 { key: "duration", label: t("table.duration"), children: resultDuration(reviewResult) },
               ]}
             />
@@ -522,16 +558,6 @@ function MatchReviewFields({ form, keys, selectedKeys, modes, onToggle, onModeCh
   );
 }
 
-function normalizeSearchResults(response: unknown): PluginSongResult[] {
-  if (Array.isArray(response)) return response as PluginSongResult[];
-  if (!response || typeof response !== "object") return [];
-  const value = response as Record<string, unknown>;
-  for (const key of ["items", "results", "songs", "data"]) {
-    if (Array.isArray(value[key])) return value[key] as PluginSongResult[];
-  }
-  return [];
-}
-
 function resultToTagPatch(result: PluginSongResult) {
   const fields = result.fields ?? {};
   const value = (key: string, fallback?: unknown) => fields[key] ?? fallback;
@@ -562,8 +588,21 @@ function resultToTagPatch(result: PluginSongResult) {
 }
 
 function resultCoverUrl(result: PluginSongResult) {
-  const value = result.fields?.cover_url ?? result.picUrl ?? result.coverUrl ?? result.artworkUrl;
+  const value = result.fields?.cover_url ?? result.picUrl ?? result.coverUrl ?? result.cover_url ?? result.artworkUrl;
   return typeof value === "string" ? value : undefined;
+}
+
+function localPluginSong(track: AudioTrack, pluginId: string): PluginSongResult & { sourceId: string; pluginId: string } {
+  return {
+    id: `local:${track.path}`,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    date: track.year,
+    duration: track.durationSeconds * 1000,
+    sourceId: pluginId,
+    pluginId,
+  };
 }
 
 function resultDuration(result: PluginSongResult) {

@@ -21,28 +21,28 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-lofty = "0.24.0"
+serde_json = "1.0.151"
+lofty = "0.25.1"
 walkdir = "2.5.0"
-base64 = "0.22.1"
-tauri-plugin-dialog = "2.7.1"
+base64 = "0.23.1"
+tauri-plugin-dialog = "2.7.2"
 image = { version = "0.25.8", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 rayon = "1.11.0"
 ebur128 = "0.1.10"
 symphonia = { version = "0.6.0", features = ["all"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-rquickjs = "0.12.0"
+rquickjs = "0.12.2"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls", "gzip", "brotli", "deflate"] }
-md-5 = "0.10.6"
-aes = "0.8.4"
-ecb = { version = "0.1.2", features = ["alloc", "block-padding"] }
+md-5 = "0.11.0"
+aes = "0.9.2"
+ecb = { version = "0.2.1", features = ["alloc", "block-padding"] }
 flate2 = "1.1.9"
-cipher = { version = "0.4.4", features = ["alloc", "block-padding"] }
-quick-xml = "0.41.0"
-regex = "1.12.2"
+cipher = { version = "0.5.2", features = ["alloc", "block-padding"] }
+quick-xml = "0.42.0"
+regex = "1.13.1"
 roxmltree = { version = "0.21.1", default-features = false, features = ["std"] }
-ferrous-opencc = "0.3.1"
+ferrous-opencc = "0.4.0"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

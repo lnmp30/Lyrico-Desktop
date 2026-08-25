@@ -19,7 +19,7 @@
     "selectedSongs": "已选歌曲",
     "drawerTitle": "已选歌曲（{{count}}）",
     "clear": "清空选择",
-    "empty": "尚未选择歌曲"
+    "empty": "没有选择歌曲"
   },
   "songs": {
     "title": "歌曲",
@@ -29,7 +29,7 @@
     "reloadAria": "重新读取当前歌曲",
     "all": "全部歌曲",
     "selected": "已选择 {{count}} 首",
-    "empty": "请先在“文件夹”中添加音乐文件夹"
+    "empty": "请先添加音乐文件夹"
   },
   "table": {
     "song": "歌曲",
@@ -66,7 +66,7 @@
     "rescanRoot": "扫描根目录",
     "remove": "从音乐库移除",
     "removeRoot": "移除根目录",
-    "empty": "添加一个或多个音乐文件夹以建立音乐库。",
+    "empty": "还没有音乐文件夹",
     "tracksTitle": "文件夹歌曲",
     "includeSubfolders": "包含子文件夹",
     "currentFolderOnly": "仅当前文件夹",

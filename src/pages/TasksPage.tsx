@@ -18,6 +18,7 @@ import { cancelBatchTask, createBatchTask, loadBatchTasks, previewBatchRename, r
 import { TrackArtwork } from "../components/TrackArtwork";
 import { LYRIC_FORMATS, type LyricFormat } from "../backend/lyricsApi";
 import { clearFinishedTask, currentActiveTask, isActiveTask, mergeBatchTaskSnapshot } from "../domain/batchTasks";
+import { isPluginSourceEnabled, normalizedCapabilities, pluginSourceOrder } from "../domain/pluginSources";
 
 const { Title, Text } = Typography;
 
@@ -506,7 +507,9 @@ export const TasksPage = memo(function TasksPage({ tracks, plugins, selectedPath
 
 function MetadataMatchPanel({ tracks, plugins, task, submitting, onRun, onCancel }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; task?: BatchTask; submitting: boolean; onRun: (config: MetadataMatchConfig) => void; onCancel: () => void }) {
   const { t } = useTranslation();
-  const availableSources = useMemo(() => plugins.filter((plugin) => plugin.enabled && plugin.capabilities.includes("searchSongs")), [plugins]);
+  const availableSources = useMemo(() => plugins
+    .filter((plugin) => isPluginSourceEnabled(plugin, "metadata") && normalizedCapabilities(plugin).includes("searchSongs"))
+    .sort((left, right) => pluginSourceOrder(left, "metadata") - pluginSourceOrder(right, "metadata")), [plugins]);
   const [enabledSources, setEnabledSources] = useState<string[]>(availableSources.map((plugin) => plugin.id));
   const [targetModes, setTargetModes] = useState<Record<string, MetadataWriteMode>>(defaultMetadataModes);
   const [preferFileName, setPreferFileName] = useState(false);
@@ -782,12 +785,12 @@ const defaultCharacterReplacements: Record<string, string> = {
 };
 const renameReplacementOptions = ["", "、", ",", "，", "＼", "／", "：", "＊", "？", "＂", "＜", "＞", "｜", "&"];
 
-function defaultRenameRules(characterMappings: Record<string, string>): CharacterMappingRule[] {
+function defaultRenameRules(characterMappings: Record<string, string>, name: string, description: string): CharacterMappingRule[] {
   return [{
     id: "builtin-invalid-file-characters",
-    name: "Invalid file characters",
+    name,
     charMappings: { ...defaultCharacterReplacements, ...characterMappings },
-    description: "Replace characters that are invalid in Windows file names",
+    description,
     isBuiltIn: true,
     isEnabled: true,
   }];
@@ -796,7 +799,7 @@ function defaultRenameRules(characterMappings: Record<string, string>): Characte
 function RenameFilesPanel({ tracks, task, submitting, onRun, onCancel, characterMappings, onChangeCharacterMappings }: { tracks: AudioTrack[]; task?: BatchTask; submitting: boolean; onRun: (config: RenameFilesConfig) => void; onCancel: () => void; characterMappings: Record<string, string>; onChangeCharacterMappings: (mappings: Record<string, string>) => void }) {
   const { t } = useTranslation();
   const [renameFormat, setRenameFormat] = useState("@1 - @2");
-  const rules = useMemo(() => defaultRenameRules(characterMappings), [characterMappings]);
+  const rules = useMemo(() => defaultRenameRules(characterMappings, t("tasks.characterMappings"), t("tasks.characterMappingsHint")), [characterMappings, t]);
   const [previews, setPreviews] = useState<RenamePreview[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");

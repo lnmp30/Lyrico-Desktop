@@ -1,12 +1,13 @@
 {
   "sources": {
-    "title": "Plugin Sources",
-    "description": "Install and configure API v3 plugins for metadata, lyrics and artwork.",
-    "install": "Install plugin ZIP",
+    "title": "Plugins",
+    "install": "Install plugin",
+    "installTitle": "Install plugin",
+    "installConfirm": "Install",
     "installed": "Installed plugins",
-    "none": "No plugins installed",
+    "none": "No plugins yet",
     "configuration": "Configuration",
-    "noConfiguration": "This plugin has no configurable fields",
+    "noConfiguration": "No settings available",
     "noCapabilities": "No declared capabilities",
     "manifest": "Manifest",
     "select": "Select a plugin",
@@ -14,6 +15,25 @@
     "configSaved": "Plugin configuration saved",
     "uninstall": "Uninstall plugin",
     "uninstallConfirm": "Uninstall {{name}}?",
-    "uninstallSuccess": "Plugin uninstalled"
+    "uninstallSuccess": "Plugin uninstalled",
+    "noneForType": "No plugins in this category",
+    "unknownAuthor": "Unknown author",
+    "priorityHint": "Plugins higher in the list are searched first.",
+    "priority": "Position {{value}}",
+    "moveUp": "Raise priority",
+    "moveDown": "Lower priority",
+    "types": {
+      "aggregated": "All-in-one",
+      "metadata": "Metadata",
+      "lyrics": "Lyrics",
+      "covers": "Artwork"
+    },
+    "conflicts": {
+      "new": "New",
+      "update": "Update",
+      "overwrite": "Reinstall",
+      "downgrade": "Downgrade"
+    },
+    "invalidPlugin": "Cannot install"
   }
 }

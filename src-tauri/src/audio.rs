@@ -23,7 +23,7 @@ pub(crate) fn read_track(
     path: &Path,
     artist_separator: &str,
     artwork_mode: ArtworkMode,
-) -> Result<AudioTrack, lofty::error::LoftyError> {
+) -> Result<AudioTrack, lofty::error::FileParseError> {
     let tagged_file = lofty::read_from_path(path)?;
     let properties = tagged_file.properties();
     let tag = tagged_file

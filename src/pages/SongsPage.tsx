@@ -46,7 +46,6 @@ export const SongsPage = memo(function SongsPage({
       <Flex className="library-page-header" justify="space-between" align="start" gap={16}>
         <div className="library-page-header-copy">
           <Title level={2}>{t("songs.title")}</Title>
-          <Text type="secondary">{t("songs.description")}</Text>
         </div>
         <Space className="library-page-actions">
           <Input

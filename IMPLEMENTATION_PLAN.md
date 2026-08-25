@@ -134,7 +134,7 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 
 ### 3.3 插件系统
 
-- [x] 移动端 API v3 manifest 基本校验、ZIP 路径安全和原子安装。
+- [x] 移动端 API1–API4 manifest 基本校验、ZIP 路径安全和原子安装；Platform Host API 保持 v3。
 - [x] QuickJS 独立上下文、同插件串行、内存/栈/超时限制和隔离缓存。
 - [x] `includeDirs` 与入口加载顺序。
 - [x] `searchSongs/getLyrics/searchCovers`、标准字段及私有 `internal` 透传。
@@ -143,6 +143,9 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 - [x] 兼容 manifest 中 boolean/number/null 标量默认值，修复 QQ 插件安装失败。
 - [x] 修复 `bodyBytes: null` 覆盖正常 JSON body 导致 QQ 搜索返回空结果。
 - [x] 编辑器默认并发搜索所有源，“全部 + 单源”Tab 和独立标签/封面/歌词确认对话框。
+- [x] 插件源按综合、标签、歌词、封面四类独立启停和排序，旧数据库状态自动迁移到四类来源。
+- [x] API4 独立歌词/封面源无需实现 `searchSongs`；歌词候选分页结果与新增标签字段已接入编辑器和批处理。
+- [x] 插件管理页按移动端信息架构重构为来源类型 Tab、插件卡片、类别开关和优先级操作，文案只描述用户可见行为。
 
 ### 3.4 编辑器与歌词
 
@@ -340,6 +343,8 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 ### M3：插件系统收尾
 
 - [x] 补齐移动端 Host API 的 XML 四项，并已使用 Apple 移动端原始 TTML 插件逻辑验证同语系 replacement 与跨语系 subtitle；作为 M1 TTML 纠偏提前完成。
+- [x] 插件协议同步至 API4，保留 API1–API3 向后兼容和 Host API v3；独立歌词/封面源与 API4 分页歌词候选可运行。
+- [x] 综合、标签、歌词、封面四类来源独立启停、独立持久化优先级，并接入插件管理页、在线编辑器和标签匹配批处理。
 - [ ] 多插件 ZIP、覆盖安装、升级、降级前展示候选和版本差异确认。
 - [ ] 建立插件诊断视图：运行日志、Host API 错误、超时、权限/能力调用和相关插件 ID。
 - [ ] 使用 `E:\Lyrico\Lyrico-Plugins` 的测试工具分别复验 Apple、QQ、酷狗、网易云、汽水。
@@ -347,6 +352,8 @@ Rust 已从单文件抽出 `audio.rs`、`commands.rs`、`config.rs`、`database.
 - [ ] 拆分过大的 `installer.rs`、`runtime.rs` 与 Host API 模块，保持 command 薄层。
 
 验收：官方移动端插件可安装、配置、搜索、取标签/歌词/封面、禁用、升级和卸载；故障插件不会拖死主进程。
+
+2026-08-25 API4 同步与插件管理页重构证据：逐段核对移动端 `PluginManagerScreen`、`SourcePluginEntity`、`SearchSourceProvider` 和 API 版本文档；桌面已支持 API1–API4/Host API v3、API4 分页歌词候选及独立歌词/封面源。综合、标签、歌词、封面四类来源拥有独立开关和持久化顺序，旧全局状态迁移时复制到各类别；插件页、在线编辑器和标签匹配批处理均使用对应类别的开关与优先级。IPC 不把宿主状态伪装成 manifest 属性，只为插件实际支持的类别返回可选 `sourceStates.{kind}.{enabled,priority}`；纯歌词插件不存在标签、封面或综合状态。清理零引用的 `LibraryPage`、`ToolsPage`、五个未接入 hooks、其专用路径工具及已被四类来源命令替代的旧全局插件 IPC，不保留过渡壳。原生 Tauri 窗口实查 5 个已安装 API4 插件，完成四类 Tab、开关状态、卡片布局和真实优先级交换/恢复。`npm test` 31 项、`cargo test` 54 项通过（2 项环境测试默认忽略），`npm run build`、`cargo check`、`cargo fmt --check` 与 `git diff --check` 通过；另显式加载移动端网易云 API4 插件完成联网 `searchSongs` 与分页 `getLyrics`，候选标签校验通过。
 
 ### M4：编辑器与标签模型收尾
 

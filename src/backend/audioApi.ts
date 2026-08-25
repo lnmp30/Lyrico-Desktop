@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, CharacterMappingRule, DesktopSettings, LibraryFolder, PluginInstallResult, RenamePreview, ReplayGainAnalysis, SourcePlugin, StorageInfo, TagForm } from "../app/types";
+import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, CharacterMappingRule, DesktopSettings, LibraryFolder, PluginInstallPreview, PluginInstallResult, PluginSourceKind, RenamePreview, ReplayGainAnalysis, SourcePlugin, StorageInfo, TagForm } from "../app/types";
 
 export async function scanFolder(folderPath: string) {
   return invoke<AudioTrack[]>("scan_folder", { folderPath });
@@ -127,12 +127,20 @@ export async function loadSourcePlugins() {
   return invoke<SourcePlugin[]>("load_source_plugins");
 }
 
-export async function installSourcePluginArchive(archivePath: string, allowDowngrade = false) {
-  return invoke<PluginInstallResult>("install_source_plugin_archive", { archivePath, allowDowngrade });
+export async function previewSourcePluginArchive(archivePath: string) {
+  return invoke<PluginInstallPreview>("preview_source_plugin_archive", { archivePath });
 }
 
-export async function setSourcePluginEnabled(pluginId: string, enabled: boolean) {
-  return invoke<SourcePlugin[]>("set_source_plugin_enabled", { pluginId, enabled });
+export async function installSourcePluginArchive(archivePath: string, selectedRoots: string[], allowDowngrade = false) {
+  return invoke<PluginInstallResult>("install_source_plugin_archive", { archivePath, selectedRoots, allowDowngrade });
+}
+
+export async function setPluginSourceEnabled(pluginId: string, sourceKind: PluginSourceKind, enabled: boolean) {
+  return invoke<SourcePlugin[]>("set_plugin_source_enabled", { pluginId, sourceKind, enabled });
+}
+
+export async function reorderPluginSources(sourceKind: PluginSourceKind, pluginIds: string[]) {
+  return invoke<SourcePlugin[]>("reorder_plugin_sources", { sourceKind, pluginIds });
 }
 
 export async function saveSourcePluginSettings(pluginId: string, config: Record<string, string>) {

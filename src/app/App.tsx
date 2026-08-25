@@ -27,9 +27,11 @@ import {
   loadSourcePlugins,
   loadDesktopSettings,
   installSourcePluginArchive,
+  previewSourcePluginArchive,
   saveSourcePluginSettings,
   saveDesktopSettings,
-  setSourcePluginEnabled,
+  setPluginSourceEnabled,
+  reorderPluginSources,
   uninstallSourcePlugin,
 } from "../backend/audioApi";
 import { Shell } from "../components/Shell";
@@ -46,7 +48,7 @@ import {
   setLanguagePreference as persistLanguagePreference,
   type LanguagePreference,
 } from "../i18n";
-import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, DesktopSettings, LibraryFolder, ScanProgress, SourcePlugin, TagForm, ViewKey } from "./types";
+import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, DesktopSettings, LibraryFolder, PluginInstallDraft, PluginSourceKind, ScanProgress, SourcePlugin, TagForm, ViewKey } from "./types";
 
 const AlbumsPage = lazy(() => import("../pages/AlbumsPage").then((m) => ({ default: m.AlbumsPage })));
 const ArtistsPage = lazy(() => import("../pages/ArtistsPage").then((m) => ({ default: m.ArtistsPage })));
@@ -573,7 +575,7 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
     updateCachedCover(nextTrack.path, nextTrack.coverDataUrl);
   }
 
-  async function installPlugin() {
+  async function preparePluginInstall(): Promise<PluginInstallDraft | undefined> {
     const archivePath = await open({
       title: t("sources.install"),
       multiple: false,
@@ -582,7 +584,16 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
     });
     if (typeof archivePath !== "string") return;
     try {
-      const result = await installSourcePluginArchive(archivePath);
+      return { archivePath, preview: await previewSourcePluginArchive(archivePath) };
+    } catch (error) {
+      message.error(String(error));
+      return undefined;
+    }
+  }
+
+  async function installPlugin(archivePath: string, selectedRoots: string[], allowDowngrade: boolean) {
+    try {
+      const result = await installSourcePluginArchive(archivePath, selectedRoots, allowDowngrade);
       setPlugins(await loadSourcePlugins());
       if (result.installed.length) message.success(t("sources.installSuccess", { count: result.installed.length }));
       if (result.failed.length) {
@@ -590,14 +601,25 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
       }
     } catch (error) {
       message.error(String(error));
+      throw error;
     }
   }
 
-  async function changePluginEnabled(pluginId: string, enabled: boolean) {
+  async function changePluginSourceEnabled(pluginId: string, sourceKind: PluginSourceKind, enabled: boolean) {
     try {
-      setPlugins(await setSourcePluginEnabled(pluginId, enabled));
+      setPlugins(await setPluginSourceEnabled(pluginId, sourceKind, enabled));
     } catch (error) {
       message.error(String(error));
+      throw error;
+    }
+  }
+
+  async function changePluginSourceOrder(sourceKind: PluginSourceKind, pluginIds: string[]) {
+    try {
+      setPlugins(await reorderPluginSources(sourceKind, pluginIds));
+    } catch (error) {
+      message.error(String(error));
+      throw error;
     }
   }
 
@@ -716,8 +738,10 @@ function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettin
         return (
           <PluginsPage
             plugins={plugins}
+            onPrepareInstall={preparePluginInstall}
             onInstall={installPlugin}
-            onChangeEnabled={changePluginEnabled}
+            onChangeSourceEnabled={changePluginSourceEnabled}
+            onChangeSourceOrder={changePluginSourceOrder}
             onSaveConfig={savePluginConfig}
             onUninstall={uninstallPlugin}
           />

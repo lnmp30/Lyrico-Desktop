@@ -317,7 +317,11 @@ fn ordered_search_plugins(
     let mut plugins: Vec<_> = plugins
         .into_iter()
         .filter(|plugin| {
-            plugin.enabled
+            plugin
+                .source_state("metadata")
+                .is_some_and(|state| state.enabled)
+                && (enabled_order.is_empty()
+                    || enabled_order.iter().any(|id| id == &plugin.manifest.id))
                 && plugin
                     .manifest
                     .capabilities
@@ -327,10 +331,14 @@ fn ordered_search_plugins(
         })
         .collect();
     plugins.sort_by_key(|plugin| {
-        enabled_order
+        let configured = enabled_order
             .iter()
             .position(|id| id == &plugin.manifest.id)
-            .unwrap_or(usize::MAX)
+            .unwrap_or(usize::MAX);
+        let priority = plugin
+            .source_state("metadata")
+            .map_or(i32::MAX, |state| state.priority);
+        (configured, priority)
     });
     plugins
 }
@@ -709,13 +717,15 @@ fn fetch_and_render_lyrics(
         "pluginId".to_string(),
         Value::String(plugin.manifest.id.clone()),
     );
-    let lyrics = runtime::invoke(
+    let lyrics_response = runtime::invoke(
         plugin,
         "getLyrics",
-        json!({"song": song, "config": plugin.config}),
+        json!({"song": song, "page": 1, "pageSize": 1, "config": plugin.config}),
     )?;
+    let lyrics = first_lyrics_candidate(&lyrics_response)
+        .ok_or_else(|| "Plugin returned no usable lyrics candidates".to_string())?;
     Ok(render_plugin_lyrics(
-        &lyrics,
+        lyrics,
         &config.lyric_format,
         json!({
             "showTranslation": config.show_translation,
@@ -726,6 +736,19 @@ fn fetch_and_render_lyrics(
         }),
     )?
     .text)
+}
+
+fn first_lyrics_candidate(response: &Value) -> Option<&Value> {
+    match response {
+        Value::Array(items) => items.first(),
+        Value::Object(object) => ["items", "results", "candidates"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(Value::as_array))
+            .and_then(|items| items.first())
+            .or(Some(response)),
+        Value::Null => None,
+        _ => Some(response),
+    }
 }
 
 fn should_write(config: &MatchConfig, key: &str, current_empty: bool) -> bool {

@@ -12,7 +12,7 @@ use crate::models::{
 };
 use crate::paths::resolve_data_paths;
 use crate::plugins::installer as plugin_installer;
-use crate::plugins::manifest::{PluginInstallResult, SourcePlugin};
+use crate::plugins::manifest::{PluginInstallPreview, PluginInstallResult, SourcePlugin};
 use crate::plugins::runtime as plugin_runtime;
 use crate::replay_gain::analyze_track;
 use crate::AppState;
@@ -43,6 +43,7 @@ pub(crate) async fn install_source_plugin_archive(
     state: State<'_, AppState>,
     archive_path: String,
     allow_downgrade: bool,
+    selected_roots: Option<Vec<String>>,
 ) -> Result<PluginInstallResult, String> {
     let paths = resolve_data_paths(&app)?;
     plugin_installer::install_archive(
@@ -50,19 +51,51 @@ pub(crate) async fn install_source_plugin_archive(
         &paths.plugins,
         Path::new(&archive_path),
         allow_downgrade,
+        selected_roots,
     )
     .await
 }
 
 #[tauri::command]
-pub(crate) async fn set_source_plugin_enabled(
+pub(crate) async fn preview_source_plugin_archive(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    archive_path: String,
+) -> Result<PluginInstallPreview, String> {
+    let paths = resolve_data_paths(&app)?;
+    plugin_installer::preview_archive(&state.database, &paths.plugins, Path::new(&archive_path))
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn set_plugin_source_enabled(
     app: AppHandle,
     state: State<'_, AppState>,
     plugin_id: String,
+    source_kind: String,
     enabled: bool,
 ) -> Result<Vec<SourcePlugin>, String> {
     let paths = resolve_data_paths(&app)?;
-    plugin_installer::set_enabled(&state.database, &paths.plugins, &plugin_id, enabled).await
+    plugin_installer::set_source_enabled(
+        &state.database,
+        &paths.plugins,
+        &plugin_id,
+        &source_kind,
+        enabled,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn reorder_plugin_sources(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_kind: String,
+    plugin_ids: Vec<String>,
+) -> Result<Vec<SourcePlugin>, String> {
+    let paths = resolve_data_paths(&app)?;
+    plugin_installer::reorder_sources(&state.database, &paths.plugins, &source_kind, plugin_ids)
+        .await
 }
 
 #[tauri::command]
@@ -600,13 +633,10 @@ pub(crate) async fn load_track_covers(
     let mut result = paths
         .into_iter()
         .filter_map(|path| {
-            cached
-                .get(&path)
-                .cloned()
-                .map(|cover_data_url| TrackCover {
-                    path,
-                    cover_data_url,
-                })
+            cached.get(&path).cloned().map(|cover_data_url| TrackCover {
+                path,
+                cover_data_url,
+            })
         })
         .collect::<Vec<_>>();
     result.extend(fresh);
