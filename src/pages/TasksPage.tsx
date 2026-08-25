@@ -11,7 +11,7 @@ import {
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { App, Button, Checkbox, Input, InputNumber, Modal, Progress, Rate, Select, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
-import { useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, BatchTask, CharacterMappingRule, DesktopSettings, RenamePreview, SourcePlugin } from "../app/types";
 import { cancelBatchTask, createBatchTask, loadBatchTasks, previewBatchRename, readImageFile, startBatchTask } from "../backend/audioApi";
@@ -115,7 +115,7 @@ const operationIcons: Record<BatchOperation, ReactNode> = {
   replaygain: <CalculatorOutlined />,
 };
 
-export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSeparator, onChangeSettings }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; selectedPaths: string[]; settings: DesktopSettings; artistSeparator: string; onChangeSettings: (settings: DesktopSettings) => void }) {
+export const TasksPage = memo(function TasksPage({ tracks, plugins, selectedPaths, settings, artistSeparator, onChangeSettings }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; selectedPaths: string[]; settings: DesktopSettings; artistSeparator: string; onChangeSettings: (settings: DesktopSettings) => void }) {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const [operation, setOperation] = useState<BatchOperation>("replaygain");
@@ -143,20 +143,22 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
     void loadBatchTasks()
       .then((tasks) => {
         if (disposed) return;
-        const replayGainTasks = tasks.filter((task) => task.taskType === "replayGain");
-        const editTasks = tasks.filter((task) => task.taskType === "editTags");
-        const lyricsTasks = tasks.filter((task) => task.taskType === "formatLyrics");
-        const metadataTasks = tasks.filter((task) => task.taskType === "matchMetadata");
-        const renameTasks = tasks.filter((task) => task.taskType === "renameFiles");
-        const exportLyricsTasks = tasks.filter((task) => task.taskType === "exportLyrics");
-        const exportCoverTasks = tasks.filter((task) => task.taskType === "exportCover");
-        setActiveReplayGainTask(currentActiveTask(replayGainTasks));
-        setActiveEditTask(currentActiveTask(editTasks));
-        setActiveLyricsTask(currentActiveTask(lyricsTasks));
-        setActiveMetadataTask(currentActiveTask(metadataTasks));
-        setActiveRenameTask(currentActiveTask(renameTasks));
-        setActiveExportLyricsTask(currentActiveTask(exportLyricsTasks));
-        setActiveExportCoverTask(currentActiveTask(exportCoverTasks));
+        const byType = new Map<string, BatchTask[]>();
+        for (const task of tasks) {
+          let bucket = byType.get(task.taskType);
+          if (!bucket) {
+            bucket = [];
+            byType.set(task.taskType, bucket);
+          }
+          bucket.push(task);
+        }
+        setActiveReplayGainTask(currentActiveTask(byType.get("replayGain") ?? []));
+        setActiveEditTask(currentActiveTask(byType.get("editTags") ?? []));
+        setActiveLyricsTask(currentActiveTask(byType.get("formatLyrics") ?? []));
+        setActiveMetadataTask(currentActiveTask(byType.get("matchMetadata") ?? []));
+        setActiveRenameTask(currentActiveTask(byType.get("renameFiles") ?? []));
+        setActiveExportLyricsTask(currentActiveTask(byType.get("exportLyrics") ?? []));
+        setActiveExportCoverTask(currentActiveTask(byType.get("exportCover") ?? []));
       })
       .catch((error) => message.error(String(error)));
     return () => {
@@ -500,7 +502,7 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
       )}
     </div>
   );
-}
+});
 
 function MetadataMatchPanel({ tracks, plugins, task, submitting, onRun, onCancel }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; task?: BatchTask; submitting: boolean; onRun: (config: MetadataMatchConfig) => void; onCancel: () => void }) {
   const { t } = useTranslation();

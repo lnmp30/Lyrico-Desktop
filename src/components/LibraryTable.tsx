@@ -1,5 +1,6 @@
 import { CheckSquareOutlined, CloudSyncOutlined, CloseOutlined } from "@ant-design/icons";
-import { Button, Flex, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Button, Flex, Space, Table, Tag, Typography } from "antd";
+import { memo, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack } from "../app/types";
 import { formatDuration } from "../utils/format";
@@ -8,7 +9,7 @@ import { useResizableColumns, type BoundedColumn } from "../hooks/useResizableCo
 
 const { Text } = Typography;
 
-export function LibraryTable({
+export const LibraryTable = memo(function LibraryTable({
   tracks,
   loading,
   selectedPath,
@@ -35,7 +36,7 @@ export function LibraryTable({
 }) {
   const { t } = useTranslation();
 
-  const baseColumns: BoundedColumn<AudioTrack>[] = [
+  const baseColumns: BoundedColumn<AudioTrack>[] = useMemo(() => [
     {
       title: t("table.song"),
       dataIndex: "title",
@@ -45,19 +46,17 @@ export function LibraryTable({
       maxWidth: 720,
       sorter: (left, right) => left.title.localeCompare(right.title),
       render: (_, track) => (
-        <Tooltip title={track.fileName} placement="topLeft">
-          <Space size={12} className="song-cell">
-            <TrackArtwork track={track} size={44} />
-            <div className="track-title-cell">
-              <Text strong ellipsis>
-                {track.title || track.fileName}
-              </Text>
-              <Text type="secondary" ellipsis>
-                {track.artist || t("common.unknownArtist")}
-              </Text>
-            </div>
-          </Space>
-        </Tooltip>
+        <Space size={12} className="song-cell" title={track.fileName}>
+          <TrackArtwork track={track} size={44} />
+          <div className="track-title-cell">
+            <Text strong ellipsis>
+              {track.title || track.fileName}
+            </Text>
+            <Text type="secondary" ellipsis>
+              {track.artist || t("common.unknownArtist")}
+            </Text>
+          </div>
+        </Space>
       ),
     },
     {
@@ -99,7 +98,7 @@ export function LibraryTable({
       responsive: ["xl"],
       render: (value: string) => <Tag>{value || "—"}</Tag>,
     },
-  ];
+  ], [t]);
   const { columns, components } = useResizableColumns(baseColumns);
 
   const rowSelection =
@@ -110,6 +109,28 @@ export function LibraryTable({
           onChange: (keys: React.Key[]) => onChangeSelectedPaths(keys.map(String)),
         }
       : undefined;
+
+  const rowClassName = useCallback((track: AudioTrack) => (track.path === selectedPath ? "row-focused" : ""), [selectedPath]);
+
+  const onRow = useCallback((track: AudioTrack) => ({
+    onClick: (event: React.MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.closest(".ant-table-selection-column, .ant-checkbox-wrapper, .ant-checkbox")) {
+        return;
+      }
+
+      if (selectionMode && onChangeSelectedPaths) {
+        onChangeSelectedPaths(
+          selectedPaths.includes(track.path)
+            ? selectedPaths.filter((path) => path !== track.path)
+            : [...selectedPaths, track.path],
+        );
+      } else {
+        onSelectTrack(track.path);
+        onOpenTrack?.(track);
+      }
+    },
+  }), [selectionMode, onChangeSelectedPaths, selectedPaths, onSelectTrack, onOpenTrack]);
 
   return (
     <div className="library-table-shell">
@@ -139,29 +160,12 @@ export function LibraryTable({
       size="middle"
       tableLayout="fixed"
       pagination={false}
-      scroll={{ x: 520 }}
+      virtual={tracks.length > 100}
+      scroll={{ x: 520, y: tracks.length > 100 ? 600 : undefined }}
       rowSelection={rowSelection}
-      rowClassName={(track) => (track.path === selectedPath ? "row-focused" : "")}
-      onRow={(track) => ({
-        onClick: (event) => {
-          const target = event.target as HTMLElement;
-          if (target.closest(".ant-table-selection-column, .ant-checkbox-wrapper, .ant-checkbox")) {
-            return;
-          }
-
-          if (selectionMode && onChangeSelectedPaths) {
-            onChangeSelectedPaths(
-              selectedPaths.includes(track.path)
-                ? selectedPaths.filter((path) => path !== track.path)
-                : [...selectedPaths, track.path],
-            );
-          } else {
-            onSelectTrack(track.path);
-            onOpenTrack?.(track);
-          }
-        },
-      })}
+      rowClassName={rowClassName}
+      onRow={onRow}
     />
     </div>
   );
-}
+});

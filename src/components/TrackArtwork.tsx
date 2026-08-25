@@ -1,13 +1,13 @@
 import { CustomerServiceOutlined } from "@ant-design/icons";
 import { Avatar } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { AudioTrack } from "../app/types";
 import { useImageDimensions } from "../hooks/useImageDimensions";
 import { useTrackCover } from "../hooks/useTrackCovers";
 
 type ArtworkTrack = Pick<AudioTrack, "coverDataUrl"> & Partial<Pick<AudioTrack, "path" | "hasCover">>;
 
-export function TrackArtwork({ track, size, showDimensions = false }: { track?: ArtworkTrack; size: number; showDimensions?: boolean }) {
+export const TrackArtwork = memo(function TrackArtwork({ track, size, showDimensions = false }: { track?: ArtworkTrack; size: number; showDimensions?: boolean }) {
   const containerRef = useRef<HTMLSpanElement>(null);
   const [nearViewport, setNearViewport] = useState(false);
   useEffect(() => {
@@ -49,4 +49,4 @@ export function TrackArtwork({ track, size, showDimensions = false }: { track?: 
       </Avatar>
     </span>
   );
-}
+});

@@ -1,6 +1,6 @@
 import { DeleteOutlined, FolderAddOutlined, ReloadOutlined } from "@ant-design/icons";
 import { Alert, Badge, Breadcrumb, Button, Card, Col, Empty, Flex, Input, Row, Segmented, Space, Tag, Tooltip, Tree, Typography } from "antd";
-import { useEffect, useMemo, useState, type Key, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type Key, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, LibraryFolder } from "../app/types";
 import { LibraryTable } from "../components/LibraryTable";
@@ -9,7 +9,7 @@ import { buildLibraryFolderTree, filterTracks, tracksInDirectory, type LibraryFo
 const { DirectoryTree } = Tree;
 const { Title, Text } = Typography;
 
-export function FoldersPage({
+export const FoldersPage = memo(function FoldersPage({
   folders,
   tracks,
   selectedFolderPath,
@@ -72,9 +72,9 @@ export function FoldersPage({
 
   const activeNode = (selectedDirectoryKey ? nodeMap.get(selectedDirectoryKey) : undefined) ?? selectedRoot;
   const activeRoot = activeNode ? folders.find((folder) => samePath(folder.path, activeNode.rootPath)) : undefined;
-  const folderTracks = activeNode ? tracksInDirectory(tracks, activeNode.path, scope === "recursive") : [];
-  const visibleTracks = filterTracks(folderTracks, query);
-  const breadcrumbs = activeNode ? folderAncestors(nodeMap, activeNode) : [];
+  const folderTracks = useMemo(() => activeNode ? tracksInDirectory(tracks, activeNode.path, scope === "recursive") : [], [activeNode, tracks, scope]);
+  const visibleTracks = useMemo(() => filterTracks(folderTracks, query), [folderTracks, query]);
+  const breadcrumbs = useMemo(() => activeNode ? folderAncestors(nodeMap, activeNode) : [], [activeNode, nodeMap]);
   const treeData = useMemo(() => folderTree.map((node) => toTreeData(node, folders)), [folderTree, folders]);
 
   function selectDirectory(node: LibraryFolderNode) {
@@ -200,7 +200,7 @@ export function FoldersPage({
       )}
     </div>
   );
-}
+});
 
 function mapFolderNodes(roots: LibraryFolderNode[]) {
   const map = new Map<string, LibraryFolderNode>();

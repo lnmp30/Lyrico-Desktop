@@ -1,4 +1,4 @@
-import { useState, type PointerEvent as ReactPointerEvent, type ReactNode, type ThHTMLAttributes } from "react";
+import { memo, useMemo, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type ThHTMLAttributes } from "react";
 import type { TableColumnsType, TableColumnType } from "antd";
 
 export type BoundedColumn<T> = TableColumnType<T> & {
@@ -18,7 +18,7 @@ export function useResizableColumns<T>(source: BoundedColumn<T>[]) {
   const [widths, setWidths] = useState<Record<string, number>>(() => Object.fromEntries(
     source.map((column, index) => [columnId(column, index), numericWidth(column.width, column.minWidth ?? 80)]),
   ));
-  const columns = source.map((column, index) => {
+  const columns = useMemo(() => source.map((column, index) => {
     const id = columnId(column, index);
     const minWidth = column.minWidth ?? 64;
     const maxWidth = column.maxWidth ?? 720;
@@ -33,12 +33,14 @@ export function useResizableColumns<T>(source: BoundedColumn<T>[]) {
         onResize: (nextWidth: number) => setWidths((current) => ({ ...current, [id]: nextWidth })),
       }),
     };
-  }) as TableColumnsType<T>;
+  }) as TableColumnsType<T>, [source, widths]);
 
-  return { columns, components: { header: { cell: ResizableHeaderCell } } };
+  const components = useMemo(() => ({ header: { cell: ResizableHeaderCell } }), []);
+
+  return { columns, components };
 }
 
-function ResizableHeaderCell({ width, minWidth = 64, maxWidth = 720, onResize, children, style, ...rest }: ResizableHeaderProps) {
+const ResizableHeaderCell = memo(function ResizableHeaderCell({ width, minWidth = 64, maxWidth = 720, onResize, children, style, ...rest }: ResizableHeaderProps) {
   const startResize = (event: ReactPointerEvent<HTMLSpanElement>) => {
     if (!width || !onResize) return;
     event.preventDefault();
@@ -59,7 +61,7 @@ function ResizableHeaderCell({ width, minWidth = 64, maxWidth = 720, onResize, c
       {onResize && <span className="column-resize-handle" onPointerDown={startResize} onClick={(event) => event.stopPropagation()} />}
     </th>
   );
-}
+});
 
 function columnId<T>(column: BoundedColumn<T>, index: number) {
   if (column.key != null) return String(column.key);

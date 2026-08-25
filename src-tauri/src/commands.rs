@@ -555,7 +555,10 @@ pub(crate) async fn load_library_folders(
 pub(crate) async fn load_library_tracks(
     state: State<'_, AppState>,
 ) -> Result<Vec<AudioTrack>, String> {
-    state.database.load_tracks().await
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.load_tracks_blocking())
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -564,9 +567,18 @@ pub(crate) async fn load_library_track(app: AppHandle, path: String) -> Result<A
 }
 
 #[tauri::command]
-pub(crate) async fn load_track_covers(paths: Vec<String>) -> Result<Vec<TrackCover>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        paths
+pub(crate) async fn load_track_covers(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<TrackCover>, String> {
+    let cached = state.database.load_cover_thumbnails(&paths)?;
+    let missing = paths
+        .iter()
+        .filter(|path| !cached.contains_key(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let fresh = tauri::async_runtime::spawn_blocking(move || {
+        missing
             .into_iter()
             .filter_map(|path| {
                 read_cover_thumbnail(Path::new(&path)).map(|cover_data_url| TrackCover {
@@ -574,10 +586,31 @@ pub(crate) async fn load_track_covers(paths: Vec<String>) -> Result<Vec<TrackCov
                     cover_data_url,
                 })
             })
-            .collect()
+            .collect::<Vec<_>>()
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    if !fresh.is_empty() {
+        let thumbnails = fresh
+            .iter()
+            .map(|cover| (cover.path.clone(), cover.cover_data_url.clone()))
+            .collect::<Vec<_>>();
+        state.database.save_cover_thumbnails(&thumbnails)?;
+    }
+    let mut result = paths
+        .into_iter()
+        .filter_map(|path| {
+            cached
+                .get(&path)
+                .cloned()
+                .map(|cover_data_url| TrackCover {
+                    path,
+                    cover_data_url,
+                })
+        })
+        .collect::<Vec<_>>();
+    result.extend(fresh);
+    Ok(result)
 }
 
 #[tauri::command]

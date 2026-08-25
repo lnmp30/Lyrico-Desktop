@@ -1,5 +1,6 @@
 import { CheckSquareOutlined, CloseOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { Button, Card, Empty, Flex, Input, Space, Tooltip, Typography } from "antd";
+import { memo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack } from "../app/types";
 import { LibraryTable } from "../components/LibraryTable";
@@ -7,7 +8,7 @@ import { LibrarySelectionToolbar } from "../components/LibrarySelectionToolbar";
 
 const { Title, Text } = Typography;
 
-export function SongsPage({
+export const SongsPage = memo(function SongsPage({
   tracks,
   query,
   selectedTrack,
@@ -39,6 +40,7 @@ export function SongsPage({
   onOpenBatch: () => void;
 }) {
   const { t } = useTranslation();
+  const handleOpenTrack = useCallback((track: AudioTrack) => onOpenDetails(track.path), [onOpenDetails]);
   return (
     <div className="workspace page-stack">
       <Flex className="library-page-header" justify="space-between" align="start" gap={16}>
@@ -88,7 +90,7 @@ export function SongsPage({
             selectedPath={selectedPath}
             selectedPaths={selectedPaths}
             onSelectTrack={onSelectTrack}
-            onOpenTrack={(track) => onOpenDetails(track.path)}
+            onOpenTrack={handleOpenTrack}
             onChangeSelectedPaths={onChangeSelectedPaths}
             selectionMode={selectionMode}
             onChangeSelectionMode={onChangeSelectionMode}
@@ -99,4 +101,4 @@ export function SongsPage({
       </Card>
     </div>
   );
-}
+});

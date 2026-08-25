@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { App as AntApp, ConfigProvider, Form, theme } from "antd";
 import enUS from "antd/locale/en_US";
 import zhCN from "antd/locale/zh_CN";
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   loadLibraryFolders,
@@ -33,6 +33,7 @@ import {
   uninstallSourcePlugin,
 } from "../backend/audioApi";
 import { Shell } from "../components/Shell";
+import { TitleBar } from "../components/TitleBar";
 import { AppContextMenu } from "../components/AppContextMenu";
 import { SongDetails } from "../components/SongDetails";
 import { defaultArtistSplitConfig, filterTracks, groupAlbums, groupArtists } from "../domain/library";
@@ -45,14 +46,15 @@ import {
   setLanguagePreference as persistLanguagePreference,
   type LanguagePreference,
 } from "../i18n";
-import { AlbumsPage } from "../pages/AlbumsPage";
-import { ArtistsPage } from "../pages/ArtistsPage";
-import { FoldersPage } from "../pages/FoldersPage";
-import { PluginsPage } from "../pages/PluginsPage";
-import { SettingsPage } from "../pages/SettingsPage";
-import { SongsPage } from "../pages/SongsPage";
-import { TasksPage } from "../pages/TasksPage";
 import type { ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, DesktopSettings, LibraryFolder, ScanProgress, SourcePlugin, TagForm, ViewKey } from "./types";
+
+const AlbumsPage = lazy(() => import("../pages/AlbumsPage").then((m) => ({ default: m.AlbumsPage })));
+const ArtistsPage = lazy(() => import("../pages/ArtistsPage").then((m) => ({ default: m.ArtistsPage })));
+const FoldersPage = lazy(() => import("../pages/FoldersPage").then((m) => ({ default: m.FoldersPage })));
+const PluginsPage = lazy(() => import("../pages/PluginsPage").then((m) => ({ default: m.PluginsPage })));
+const SettingsPage = lazy(() => import("../pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
+const SongsPage = lazy(() => import("../pages/SongsPage").then((m) => ({ default: m.SongsPage })));
+const TasksPage = lazy(() => import("../pages/TasksPage").then((m) => ({ default: m.TasksPage })));
 import { getReplayGainProgress, publishReplayGainProgress } from "../hooks/useReplayGainProgress";
 import "../App.css";
 
@@ -67,21 +69,45 @@ const defaultDesktopSettings: DesktopSettings = {
   renameCharacterMappings: {
     "\\": "＼", "/": "／", ":": "：", "*": "＊", "?": "？", "\"": "＂", "<": "＜", ">": "＞", "|": "｜",
   },
+  theme: "system",
 };
 
 export default function App() {
   const { i18n } = useTranslation();
   const antLocale = i18n.resolvedLanguage?.startsWith("zh") ? zhCN : enUS;
+  const [themePreference, setThemePreference] = useState<DesktopSettings["theme"]>("system");
 
   useEffect(() => {
     document.documentElement.lang = i18n.resolvedLanguage ?? "en-US";
   }, [i18n.resolvedLanguage]);
 
+  const resolvedTheme = useMemo(() => {
+    if (themePreference === "system") {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    return themePreference;
+  }, [themePreference]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", resolvedTheme);
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    if (themePreference !== "system") return;
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = () => {
+      document.documentElement.setAttribute("data-theme", mediaQuery.matches ? "dark" : "light");
+    };
+    mediaQuery.addEventListener("change", handler);
+    return () => mediaQuery.removeEventListener("change", handler);
+  }, [themePreference]);
+
   return (
     <ConfigProvider
       locale={antLocale}
       theme={{
-        algorithm: theme.defaultAlgorithm,
+        cssVar: {},
+        algorithm: resolvedTheme === "dark" ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: {
           colorPrimary: "#1677ff",
           borderRadius: 8,
@@ -91,13 +117,17 @@ export default function App() {
       }}
     >
       <AntApp>
-        <LyricoDesktop />
+        <LyricoDesktop onThemeChange={setThemePreference} />
       </AntApp>
     </ConfigProvider>
   );
 }
 
-function LyricoDesktop() {
+function PageFallback() {
+  return null;
+}
+
+function LyricoDesktop({ onThemeChange }: { onThemeChange: (theme: DesktopSettings["theme"]) => void }) {
   const { message } = AntApp.useApp();
   const { t, i18n } = useTranslation();
   const [activeView, setActiveView] = useState<ViewKey>("songs");
@@ -137,15 +167,19 @@ function LyricoDesktop() {
     () => (activeView === "artists" ? groupArtists(filteredTracks, artistSplitConfig) : []),
     [activeView, filteredTracks, artistSplitConfig],
   );
-  const selectedTrackSummary = tracks.find((track) => track.path === selectedPath);
+  const trackByPath = useMemo(() => {
+    const map = new Map<string, AudioTrack>();
+    for (const track of tracks) map.set(track.path, track);
+    return map;
+  }, [tracks]);
+  const selectedTrackSummary = useMemo(() => (selectedPath ? trackByPath.get(selectedPath) : undefined), [trackByPath, selectedPath]);
   const selectedTrack = detailTrack?.path === selectedPath ? detailTrack : selectedTrackSummary;
   const selectedTracks = useMemo(() => {
-    const byPath = new Map(tracks.map((track) => [track.path, track]));
     return selectedPaths.flatMap((path) => {
-      const track = byPath.get(path);
+      const track = trackByPath.get(path);
       return track ? [track] : [];
     });
-  }, [selectedPaths, tracks]);
+  }, [selectedPaths, trackByPath]);
 
   useEffect(() => {
     Promise.all([loadLibraryFolders(), loadLibraryTracks(), loadArtistSplitConfig(), loadSourcePlugins(), loadDesktopSettings()])
@@ -158,6 +192,7 @@ function LyricoDesktop() {
         setArtistSplitConfig(storedArtistSplitConfig);
         setPlugins(storedPlugins);
         setDesktopSettings(storedSettings);
+        onThemeChange(storedSettings.theme);
       })
       .catch(() => {
         setFolders([]);
@@ -286,12 +321,12 @@ function LyricoDesktop() {
     }
   }
 
-  function selectTrack(path?: string) {
+  const selectTrack = useCallback(function selectTrack(path?: string) {
     setSelectedPath(path);
     if (detailTrack?.path !== path) setDetailTrack(undefined);
-  }
+  }, [detailTrack]);
 
-  async function openTrackDetails(path = selectedPath) {
+  const openTrackDetails = useCallback(async function openTrackDetails(path = selectedPath) {
     if (!path) return;
     setSelectedPath(path);
     setDetailsOpen(true);
@@ -308,9 +343,9 @@ function LyricoDesktop() {
     } finally {
       if (requestId === detailRequest.current) setDetailsLoading(false);
     }
-  }
+  }, [selectedPath, detailTrack, message]);
 
-  async function refreshSelected() {
+  const refreshSelected = useCallback(async function refreshSelected() {
     if (!selectedTrack) return;
     setLoading(true);
     try {
@@ -323,7 +358,7 @@ function LyricoDesktop() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [selectedTrack, t, message]);
 
   async function saveSelected() {
     if (!selectedTrack) {
@@ -345,6 +380,55 @@ function LyricoDesktop() {
       setSaving(false);
     }
   }
+
+  const openBatchForSelection = useCallback(function openBatchForSelection() {
+    if (selectedPaths.length === 0) {
+      message.warning(t("messages.selectSongs"));
+      return;
+    }
+    setDetailsOpen(false);
+    setAlbumDetailsOpen(false);
+    setArtistDetailsOpen(false);
+    setSelectionMode(false);
+    setActiveView("tasks");
+  }, [selectedPaths.length, t, message]);
+
+  const changeSelectionMode = useCallback(function changeSelectionMode(enabled: boolean) {
+    setSelectedPaths([]);
+    setSelectionMode(enabled);
+  }, []);
+
+  const onChangeQuery = useCallback(setQuery, []);
+  const onChangeSelectedPaths = useCallback(setSelectedPaths, []);
+
+  const onSelectAlbum = useCallback((albumId?: string) => {
+    if (albumId) setSelectedAlbumId(albumId);
+    setAlbumDetailsOpen(true);
+  }, []);
+
+  const onAlbumOpenTrack = useCallback((path: string) => {
+    setAlbumDetailsOpen(false);
+    void openTrackDetails(path);
+  }, [openTrackDetails]);
+
+  const onAlbumOpenDetails = useCallback(() => setAlbumDetailsOpen(true), []);
+  const onAlbumCloseDetails = useCallback(() => setAlbumDetailsOpen(false), []);
+
+  const onSelectArtist = useCallback((artistId?: string) => {
+    if (artistId) setSelectedArtistId(artistId);
+    setArtistDetailsOpen(true);
+  }, []);
+
+  const onArtistOpenTrack = useCallback((path: string) => {
+    setArtistDetailsOpen(false);
+    void openTrackDetails(path);
+  }, [openTrackDetails]);
+
+  const onArtistOpenDetails = useCallback(() => setArtistDetailsOpen(true), []);
+  const onArtistCloseDetails = useCallback(() => setArtistDetailsOpen(false), []);
+
+  const onRemoveSelectedTrack = useCallback((path: string) => setSelectedPaths((current) => current.filter((candidate) => candidate !== path)), []);
+  const onClearSelectedTracks = useCallback(() => setSelectedPaths([]), []);
 
   async function calculateSelectedReplayGain() {
     if (!selectedTrack || getReplayGainProgress()?.status === "running") return;
@@ -553,28 +637,12 @@ function LyricoDesktop() {
 
   function changeDesktopSettings(settings: DesktopSettings) {
     setDesktopSettings(settings);
+    onThemeChange(settings.theme);
     settingsSaveQueue.current = settingsSaveQueue.current
       .then(() => saveDesktopSettings(settings))
       .catch((error) => {
         message.error(String(error));
       });
-  }
-
-  function openBatchForSelection() {
-    if (selectedPaths.length === 0) {
-      message.warning(t("messages.selectSongs"));
-      return;
-    }
-    setDetailsOpen(false);
-    setAlbumDetailsOpen(false);
-    setArtistDetailsOpen(false);
-    setSelectionMode(false);
-    setActiveView("tasks");
-  }
-
-  function changeSelectionMode(enabled: boolean) {
-    setSelectedPaths([]);
-    setSelectionMode(enabled);
   }
 
   function renderActivePage() {
@@ -588,21 +656,15 @@ function LyricoDesktop() {
             selectedPath={selectedPath}
             detailsOpen={albumDetailsOpen}
             loading={loading}
-            onChangeQuery={setQuery}
-            onSelectAlbum={(albumId) => {
-              setSelectedAlbumId(albumId);
-              setAlbumDetailsOpen(true);
-            }}
+            onChangeQuery={onChangeQuery}
+            onSelectAlbum={onSelectAlbum}
             onSelectTrack={selectTrack}
-            onOpenTrack={(path) => {
-              setAlbumDetailsOpen(false);
-              void openTrackDetails(path);
-            }}
-            onOpenDetails={() => setAlbumDetailsOpen(true)}
-            onCloseDetails={() => setAlbumDetailsOpen(false)}
+            onOpenTrack={onAlbumOpenTrack}
+            onOpenDetails={onAlbumOpenDetails}
+            onCloseDetails={onAlbumCloseDetails}
             selectedPaths={selectedPaths}
             selectionMode={selectionMode}
-            onChangeSelectedPaths={setSelectedPaths}
+            onChangeSelectedPaths={onChangeSelectedPaths}
             onChangeSelectionMode={changeSelectionMode}
             onOpenBatch={openBatchForSelection}
           />
@@ -616,21 +678,15 @@ function LyricoDesktop() {
             selectedPath={selectedPath}
             detailsOpen={artistDetailsOpen}
             loading={loading}
-            onChangeQuery={setQuery}
-            onSelectArtist={(artistId) => {
-              setSelectedArtistId(artistId);
-              setArtistDetailsOpen(true);
-            }}
+            onChangeQuery={onChangeQuery}
+            onSelectArtist={onSelectArtist}
             onSelectTrack={selectTrack}
-            onOpenTrack={(path) => {
-              setArtistDetailsOpen(false);
-              void openTrackDetails(path);
-            }}
-            onOpenDetails={() => setArtistDetailsOpen(true)}
-            onCloseDetails={() => setArtistDetailsOpen(false)}
+            onOpenTrack={onArtistOpenTrack}
+            onOpenDetails={onArtistOpenDetails}
+            onCloseDetails={onArtistCloseDetails}
             selectedPaths={selectedPaths}
             selectionMode={selectionMode}
-            onChangeSelectedPaths={setSelectedPaths}
+            onChangeSelectedPaths={onChangeSelectedPaths}
             onChangeSelectionMode={changeSelectionMode}
             onOpenBatch={openBatchForSelection}
           />
@@ -651,7 +707,7 @@ function LyricoDesktop() {
             onOpenTrack={openTrackDetails}
             selectedPaths={selectedPaths}
             selectionMode={selectionMode}
-            onChangeSelectedPaths={setSelectedPaths}
+            onChangeSelectedPaths={onChangeSelectedPaths}
             onChangeSelectionMode={changeSelectionMode}
             onOpenBatch={openBatchForSelection}
           />
@@ -698,9 +754,9 @@ function LyricoDesktop() {
             selectedPath={selectedPath}
             selectedPaths={selectedPaths}
             loading={loading}
-            onChangeQuery={setQuery}
+            onChangeQuery={onChangeQuery}
             onSelectTrack={selectTrack}
-            onChangeSelectedPaths={setSelectedPaths}
+            onChangeSelectedPaths={onChangeSelectedPaths}
             selectionMode={selectionMode}
             onChangeSelectionMode={changeSelectionMode}
             onOpenBatch={openBatchForSelection}
@@ -713,7 +769,8 @@ function LyricoDesktop() {
 
   return (
     <>
-    <Shell
+    <TitleBar />
+      <Shell
       activeView={activeView}
       folders={folders}
       trackCount={tracks.length}
@@ -721,11 +778,11 @@ function LyricoDesktop() {
       selectedTracks={selectedTracks}
       onChangeView={setActiveView}
       onCancelReplayGain={cancelActiveReplayGain}
-      onRemoveSelectedTrack={(path) => setSelectedPaths((current) => current.filter((candidate) => candidate !== path))}
-      onClearSelectedTracks={() => setSelectedPaths([])}
+      onRemoveSelectedTrack={onRemoveSelectedTrack}
+      onClearSelectedTracks={onClearSelectedTracks}
       onOpenSelectedBatch={openBatchForSelection}
     >
-      {renderActivePage()}
+      <Suspense fallback={<PageFallback />}>{renderActivePage()}</Suspense>
       <SongDetails
         open={detailsOpen}
         loading={detailsLoading}

@@ -1,5 +1,6 @@
 import { CheckSquareOutlined, CloseOutlined, SearchOutlined } from "@ant-design/icons";
 import { Button, Card, Drawer, Flex, Input, Space, Table, Typography } from "antd";
+import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { LibraryTable } from "../components/LibraryTable";
 import { LibrarySelectionToolbar } from "../components/LibrarySelectionToolbar";
@@ -10,7 +11,7 @@ import { useResizableColumns, type BoundedColumn } from "../hooks/useResizableCo
 
 const { Title, Text } = Typography;
 
-export function ArtistsPage({
+export const ArtistsPage = memo(function ArtistsPage({
   artists,
   query,
   selectedArtistId,
@@ -49,8 +50,8 @@ export function ArtistsPage({
 }) {
   const { t } = useTranslation();
   const selectedArtist = artists.find((artist) => artist.id === selectedArtistId);
-  const selectedSet = new Set(selectedPaths);
-  const fullySelectedArtistIds = artists.filter((artist) => artist.tracks.length > 0 && artist.tracks.every((track) => selectedSet.has(track.path))).map((artist) => artist.id);
+  const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
+  const fullySelectedArtistIds = useMemo(() => artists.filter((artist) => artist.tracks.length > 0 && artist.tracks.every((track) => selectedSet.has(track.path))).map((artist) => artist.id), [artists, selectedSet]);
   const changeArtistSelection = (artist: ArtistGroup, selected: boolean) => {
     const artistPaths = new Set(artist.tracks.map((track) => track.path));
     onChangeSelectedPaths(selected
@@ -152,4 +153,4 @@ export function ArtistsPage({
       </Drawer>
     </div>
   );
-}
+});

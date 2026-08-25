@@ -12,7 +12,7 @@ import {
   TeamOutlined,
 } from "@ant-design/icons";
 import { Badge, Button, Drawer, Flex, Layout, Menu, Progress, Table, Tooltip, Typography, type MenuProps, type TableColumnsType } from "antd";
-import { useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, LibraryFolder, ReplayGainProgress, ScanProgress, ViewKey } from "../app/types";
 import { useReplayGainProgress } from "../hooks/useReplayGainProgress";
@@ -20,7 +20,7 @@ import { useReplayGainProgress } from "../hooks/useReplayGainProgress";
 const { Sider, Content } = Layout;
 const { Text } = Typography;
 
-export function Shell({
+export const Shell = memo(function Shell({
   activeView,
   children,
   folders,
@@ -49,7 +49,7 @@ export function Shell({
   const replayGainProgress = useReplayGainProgress();
   const [collapsed, setCollapsed] = useState(false);
   const [selectionDrawerOpen, setSelectionDrawerOpen] = useState(false);
-  const navigationItems: MenuProps["items"] = [
+  const navigationItems: MenuProps["items"] = useMemo(() => [
     {
       type: "group",
       label: t("nav.library"),
@@ -68,7 +68,7 @@ export function Shell({
         { key: "tasks", icon: <CloudSyncOutlined />, label: t("common.tasks") },
       ],
     },
-  ];
+  ], [t]);
 
   return (
     <Layout className="app-shell">
@@ -161,7 +161,7 @@ export function Shell({
       />
     </Layout>
   );
-}
+});
 
 function SelectionDrawer({ open, tracks, onClose, onRemove, onClear, onOpenBatch }: { open: boolean; tracks: AudioTrack[]; onClose: () => void; onRemove: (path: string) => void; onClear: () => void; onOpenBatch: () => void }) {
   const { t } = useTranslation();

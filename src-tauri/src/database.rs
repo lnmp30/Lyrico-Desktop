@@ -236,7 +236,7 @@ impl Database {
         Ok(())
     }
 
-    pub(crate) async fn load_tracks(&self) -> Result<Vec<AudioTrack>, String> {
+    pub(crate) fn load_tracks_blocking(&self) -> Result<Vec<AudioTrack>, String> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
@@ -254,6 +254,60 @@ impl Database {
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn load_cover_thumbnails(
+        &self,
+        paths: &[String],
+    ) -> Result<HashMap<String, String>, String> {
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let connection = self.lock()?;
+        let placeholders = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT path, cover_thumbnail_data_url FROM songs \
+             WHERE path IN ({placeholders}) AND cover_thumbnail_data_url IS NOT NULL"
+        );
+        let mut statement = connection
+            .prepare(&query)
+            .map_err(|error| error.to_string())?;
+        let mut rows = statement
+            .query(rusqlite::params_from_iter(paths))
+            .map_err(|error| error.to_string())?;
+        let mut thumbnails = HashMap::with_capacity(paths.len());
+        while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+            let data_url = row
+                .get::<_, Option<String>>(1)
+                .map_err(|error| error.to_string())?;
+            if let Some(data_url) = data_url {
+                thumbnails.insert(
+                    row.get::<_, String>(0).map_err(|error| error.to_string())?,
+                    data_url,
+                );
+            }
+        }
+        Ok(thumbnails)
+    }
+
+    pub(crate) fn save_cover_thumbnails(
+        &self,
+        thumbnails: &[(String, String)],
+    ) -> Result<(), String> {
+        if thumbnails.is_empty() {
+            return Ok(());
+        }
+        let connection = self.lock()?;
+        for (path, data_url) in thumbnails {
+            connection
+                .execute(
+                    "UPDATE songs SET cover_thumbnail_data_url = ?2, updated_at = ?3 \
+                     WHERE path = ?1",
+                    params![path, data_url, as_i64(now())],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn load_folder_index(
@@ -1380,7 +1434,7 @@ mod tests {
                 .await
                 .expect("renamed path should be migrated");
 
-            let tracks = database.load_tracks().await.expect("tracks should load");
+            let tracks = database.load_tracks_blocking().expect("tracks should load");
             assert_eq!(tracks.len(), 1);
             assert_eq!(tracks[0].path, new_path);
             assert_eq!(tracks[0].file_name, "after.flac");

@@ -57,7 +57,12 @@ export function groupAlbums(tracks: AudioTrack[]): AlbumGroup[] {
   const groups = new Map<string, AudioTrack[]>();
   for (const track of tracks) {
     const key = `${track.album || "Unknown Album"}\u0000${track.albumArtist || track.artist || "Unknown Artist"}`;
-    groups.set(key, [...(groups.get(key) ?? []), track]);
+    let group = groups.get(key);
+    if (!group) {
+      group = [];
+      groups.set(key, group);
+    }
+    group.push(track);
   }
 
   return [...groups.entries()]
@@ -109,11 +114,23 @@ export const defaultArtistSplitConfig: ArtistSplitConfig = {
 };
 
 export function groupArtists(tracks: AudioTrack[], config: ArtistSplitConfig = defaultArtistSplitConfig): ArtistGroup[] {
+  const separators = effectiveArtistSeparators(config).sort((left, right) => right.length - left.length);
+  const noSplitArtists = effectiveNoSplitArtists(config);
+  const protectedArtists = noSplitArtists
+    .filter((artist) => separators.some((separator) => includesIgnoreCase(artist, separator)))
+    .sort((left, right) => right.length - left.length);
+  const noSplitKeys = new Set(noSplitArtists.map(normalizedArtistKey));
+
   const groups = new Map<string, AudioTrack[]>();
   for (const track of tracks) {
     const rawArtist = track.artist || track.albumArtist || "Unknown Artist";
-    for (const artist of splitArtists(rawArtist, config)) {
-      groups.set(artist, [...(groups.get(artist) ?? []), track]);
+    for (const artist of splitArtistsCached(rawArtist, separators, protectedArtists, noSplitKeys)) {
+      let group = groups.get(artist);
+      if (!group) {
+        group = [];
+        groups.set(artist, group);
+      }
+      group.push(track);
     }
   }
 
@@ -147,6 +164,20 @@ export function splitArtists(rawArtist: string | undefined, config: ArtistSplitC
   const protectedArtists = noSplitArtists
     .filter((artist) => separators.some((separator) => includesIgnoreCase(artist, separator)))
     .sort((left, right) => right.length - left.length);
+  const noSplitKeys = new Set(noSplitArtists.map(normalizedArtistKey));
+
+  return splitArtistsCached(raw, separators, protectedArtists, noSplitKeys);
+}
+
+function splitArtistsCached(
+  raw: string,
+  separators: string[],
+  protectedArtists: string[],
+  noSplitKeys: Set<string>,
+): string[] {
+  if (!raw) return [];
+  if (noSplitKeys.has(normalizedArtistKey(raw))) return [raw];
+  if (separators.length === 0) return [raw];
 
   const artists: string[] = [];
   let current = "";
@@ -174,20 +205,44 @@ export function splitArtists(rawArtist: string | undefined, config: ArtistSplitC
 
 export function effectiveArtistSeparators(config: ArtistSplitConfig) {
   const hidden = new Set(config.hiddenBuiltinSeparatorIds);
-  const builtin = builtinArtistSeparators
-    .filter((item) => !hidden.has(item.id))
-    .filter((item) => config.builtinSeparatorOverrides[item.id] ?? item.defaultEnabled)
-    .map((item) => item.value);
-  const custom = config.customSeparators.filter((item) => item.enabled).map((item) => item.value);
-  return [...builtin, ...custom].filter((value) => value.trim()).filter((value, index, all) => all.findIndex((candidate) => candidate.trim() === value.trim()) === index);
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const item of builtinArtistSeparators) {
+    if (hidden.has(item.id)) continue;
+    if (!(config.builtinSeparatorOverrides[item.id] ?? item.defaultEnabled)) continue;
+    const value = item.value.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  for (const item of config.customSeparators) {
+    if (!item.enabled) continue;
+    const value = item.value.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
 }
 
 export function effectiveNoSplitArtists(config: ArtistSplitConfig) {
-  const builtin = builtinNoSplitArtists
-    .filter((item) => config.builtinNoSplitArtistOverrides[item.id] ?? item.defaultEnabled)
-    .map((item) => item.name);
-  const custom = config.customNoSplitArtists.filter((item) => item.enabled).map((item) => item.name);
-  return [...builtin, ...custom].filter((value) => value.trim()).filter((value, index, all) => all.findIndex((candidate) => normalizedArtistKey(candidate) === normalizedArtistKey(value)) === index);
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const item of builtinNoSplitArtists) {
+    if (!(config.builtinNoSplitArtistOverrides[item.id] ?? item.defaultEnabled)) continue;
+    const value = item.name.trim();
+    if (!value || seen.has(normalizedArtistKey(value))) continue;
+    seen.add(normalizedArtistKey(value));
+    result.push(value);
+  }
+  for (const item of config.customNoSplitArtists) {
+    if (!item.enabled) continue;
+    const value = item.name.trim();
+    if (!value || seen.has(normalizedArtistKey(value))) continue;
+    seen.add(normalizedArtistKey(value));
+    result.push(value);
+  }
+  return result;
 }
 
 function normalizedArtistKey(value: string) {

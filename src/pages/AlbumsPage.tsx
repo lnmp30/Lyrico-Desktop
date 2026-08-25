@@ -1,5 +1,6 @@
 import { CheckSquareOutlined, CloseOutlined, SearchOutlined } from "@ant-design/icons";
 import { Button, Card, Drawer, Flex, Input, Space, Table, Typography } from "antd";
+import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack } from "../app/types";
 import { LibraryTable } from "../components/LibraryTable";
@@ -11,7 +12,7 @@ import { useResizableColumns, type BoundedColumn } from "../hooks/useResizableCo
 
 const { Title, Text } = Typography;
 
-export function AlbumsPage({
+export const AlbumsPage = memo(function AlbumsPage({
   albums,
   query,
   selectedAlbumId,
@@ -50,8 +51,8 @@ export function AlbumsPage({
 }) {
   const { t } = useTranslation();
   const selectedAlbum = albums.find((album) => album.id === selectedAlbumId);
-  const selectedSet = new Set(selectedPaths);
-  const fullySelectedAlbumIds = albums.filter((album) => album.tracks.length > 0 && album.tracks.every((track) => selectedSet.has(track.path))).map((album) => album.id);
+  const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
+  const fullySelectedAlbumIds = useMemo(() => albums.filter((album) => album.tracks.length > 0 && album.tracks.every((track) => selectedSet.has(track.path))).map((album) => album.id), [albums, selectedSet]);
   const changeAlbumSelection = (album: AlbumGroup, selected: boolean) => {
     const albumPaths = new Set(album.tracks.map((track) => track.path));
     onChangeSelectedPaths(selected
@@ -164,4 +165,4 @@ export function AlbumsPage({
       </Drawer>
     </div>
   );
-}
+});
