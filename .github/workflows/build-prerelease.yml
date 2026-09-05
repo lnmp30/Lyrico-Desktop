@@ -1,0 +1,80 @@
+name: Build Windows & Pre-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本号，自动加 v 前缀，例如 0.1.1-alpha.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write        # 创建 tag 和 release 需要写权限
+
+jobs:
+  build-windows:
+    name: Build NSIS installer & pre-release
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      TAG: ${{ startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust (stable / MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri bundle (NSIS)
+        run: npm run tauri build
+
+      - name: Upload installer to Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lyrico-desktop-windows-${{ env.TAG }}
+          path: src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
+
+      # 手动触发时仓库里还没有这个 tag，先创建并推送（重复运行时自动跳过）
+      - name: Create & push tag if missing
+        shell: bash
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::notice title=tag::$TAG 已存在，跳过创建"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "::notice title=tag::已创建并推送 tag $TAG"
+          fi
+
+      # 创建 Pre-release 并挂上安装包；如果 release 已存在则只补传产物
+      - name: Create pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice title=release::$TAG 的 Release 已存在，仅补充上传产物"
+            gh release upload "$TAG" src-tauri/target/release/bundle/nsis/* --clobber
+          else
+            gh release create "$TAG" \
+              src-tauri/target/release/bundle/nsis/* \
+              --title "Lyrico Desktop $TAG" \
+              --prerelease \
+              --generate-notes
+          fi
