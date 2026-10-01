@@ -1,12 +1,11 @@
 use super::lyrics::render_plugin_lyrics;
 use super::processor::{BatchProcessor, ProcessContext, ProcessError, ProcessOutcome};
-use crate::audio::{read_track, save_tags, ArtworkMode};
+use crate::audio::{read_track, save_tag_fields, ArtworkMode};
+use crate::lyrics::LineTrack;
 use crate::models::{AudioTrack, TagUpdate};
 use crate::paths::resolve_data_paths;
 use crate::plugins::manifest::SourcePlugin;
 use crate::plugins::{installer, runtime};
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -14,7 +13,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
-use std::time::Duration;
 
 static VERSION_NOISE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)[(\[（【《]?\s*(?:official\s*(?:video|audio|mv)|music\s*video|lyric[s]?\s*video|lyrics?|完整版|高清|无损|动态歌词|歌词版|instrumental|inst\.?|off\s*vocal|伴奏|纯音乐|live|现场版?|remix|remaster(?:ed)?|acoustic|cover|sped\s*up|slowed|nightcore|demo|edit|radio\s*edit|deluxe|bonus\s*track)\s*[)\]）】》]?"#).unwrap()
@@ -62,6 +60,10 @@ struct MatchConfig {
     only_translation_if_available: bool,
     #[serde(default = "default_true")]
     remove_empty_lyric_lines: bool,
+    #[serde(default)]
+    lyric_line_order: Vec<LineTrack>,
+    #[serde(default)]
+    remove_tag_line_keywords: Vec<String>,
     #[serde(default = "default_conversion_mode")]
     lyrics_conversion_mode: String,
 }
@@ -109,6 +111,7 @@ impl BatchProcessor for MatchMetadataProcessor {
         let plugins = tauri::async_runtime::block_on(installer::load_plugins(
             context.database,
             &paths.plugins,
+            None,
         ))
         .map_err(ProcessError::Failed)?;
         let plugins = ordered_search_plugins(plugins, &config.enabled_source_order_ids);
@@ -139,6 +142,7 @@ impl BatchProcessor for MatchMetadataProcessor {
                         "separator": config.separator,
                         "config": plugin.config,
                     }),
+                    None,
                 );
                 match response {
                     Ok(response) => {
@@ -211,7 +215,7 @@ impl BatchProcessor for MatchMetadataProcessor {
         let cover_data_url = if should_write(&config, "cover_url", !current.has_cover) {
             fields
                 .get("cover_url")
-                .and_then(|url| match fetch_remote_image(url) {
+                .and_then(|url| match crate::remote_image::fetch(url, None) {
                     Ok(image) => Some(image),
                     Err(error) => {
                         log_source_warning(
@@ -240,7 +244,8 @@ impl BatchProcessor for MatchMetadataProcessor {
         if changed_fields.is_empty() {
             return Err(ProcessError::Skipped("No fields to update".to_string()));
         }
-        let updated = save_tags(update, context.artist_separator).map_err(ProcessError::Failed)?;
+        let updated = save_tag_fields(update, context.artist_separator, &changed_fields)
+            .map_err(ProcessError::Failed)?;
         on_progress(1.0);
         Ok(ProcessOutcome {
             result_json: Some(
@@ -317,9 +322,10 @@ fn ordered_search_plugins(
     let mut plugins: Vec<_> = plugins
         .into_iter()
         .filter(|plugin| {
-            plugin
-                .source_state("metadata")
-                .is_some_and(|state| state.enabled)
+            plugin.enabled
+                && plugin
+                    .source_state("metadata")
+                    .is_some_and(|state| state.enabled)
                 && (enabled_order.is_empty()
                     || enabled_order.iter().any(|id| id == &plugin.manifest.id))
                 && plugin
@@ -720,35 +726,48 @@ fn fetch_and_render_lyrics(
     let lyrics_response = runtime::invoke(
         plugin,
         "getLyrics",
-        json!({"song": song, "page": 1, "pageSize": 1, "config": plugin.config}),
-    )?;
-    let lyrics = first_lyrics_candidate(&lyrics_response)
-        .ok_or_else(|| "Plugin returned no usable lyrics candidates".to_string())?;
-    Ok(render_plugin_lyrics(
-        lyrics,
-        &config.lyric_format,
         json!({
-            "showTranslation": config.show_translation,
-            "showRomanization": config.show_romanization,
-            "onlyTranslationIfAvailable": config.only_translation_if_available,
-            "removeEmptyLines": config.remove_empty_lyric_lines,
-            "conversionMode": config.lyrics_conversion_mode,
+            "song": song,
+            "config": plugin.config,
+            "page": 1,
+            "pageSize": 10
         }),
-    )?
-    .text)
-}
-
-fn first_lyrics_candidate(response: &Value) -> Option<&Value> {
-    match response {
-        Value::Array(items) => items.first(),
-        Value::Object(object) => ["items", "results", "candidates"]
-            .iter()
-            .find_map(|key| object.get(*key).and_then(Value::as_array))
-            .and_then(|items| items.first())
-            .or(Some(response)),
-        Value::Null => None,
-        _ => Some(response),
+        None,
+    )?;
+    let mut candidates = crate::plugins::lyrics_candidates(&lyrics_response);
+    if plugin.manifest.api_version >= 4 {
+        candidates = crate::plugins::filter_api4_candidates(candidates);
     }
+    let title = string_value(result, &["title", "name", "songName"]);
+    let artist = string_value(result, &["artist", "artists", "singer"]);
+    let album = string_value(result, &["album", "albumName"]);
+    let candidates = crate::plugins::ordered_lyrics_candidates(candidates, &title, &artist, &album);
+    if candidates.is_empty() {
+        return Err("Plugin returned no lyrics candidates".to_string());
+    }
+    let options = json!({
+        "showTranslation": config.show_translation,
+        "showRomanization": config.show_romanization,
+        "onlyTranslationIfAvailable": config.only_translation_if_available,
+        "lineOrder": config.lyric_line_order,
+        "removeTagLineKeywords": config.remove_tag_line_keywords,
+        "removeEmptyLines": config.remove_empty_lyric_lines,
+        "conversionMode": config.lyrics_conversion_mode,
+    });
+    let mut last_error = String::new();
+    for candidate in &candidates {
+        let payload = crate::plugins::lyrics_payload(candidate);
+        match render_plugin_lyrics(&payload, &config.lyric_format, options.clone()) {
+            Ok(rendered) if !rendered.text.trim().is_empty() => return Ok(rendered.text),
+            Ok(_) => {}
+            Err(error) => last_error = error,
+        }
+    }
+    Err(if last_error.is_empty() {
+        "Plugin returned no usable lyrics".to_string()
+    } else {
+        last_error
+    })
 }
 
 fn should_write(config: &MatchConfig, key: &str, current_empty: bool) -> bool {
@@ -844,6 +863,7 @@ fn build_update(
     });
     (
         TagUpdate {
+            custom_tags: None,
             path: current.path.clone(),
             title,
             artist: normalize_separator(&artist, artist_separator),
@@ -908,43 +928,6 @@ fn numeric_field(
     }
 }
 
-fn fetch_remote_image(url: &str) -> Result<String, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("Only HTTP and HTTPS image URLs are supported".to_string());
-    }
-    let response = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| error.to_string())?
-        .get(parsed)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| error.to_string())?;
-    let mime = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .unwrap_or("application/octet-stream")
-        .to_string();
-    if !mime.starts_with("image/") {
-        return Err(format!("Remote resource is not an image: {mime}"));
-    }
-    if response
-        .content_length()
-        .is_some_and(|length| length > 20 * 1024 * 1024)
-    {
-        return Err("Remote image is larger than 20 MB".to_string());
-    }
-    let bytes = response.bytes().map_err(|error| error.to_string())?;
-    if bytes.len() > 20 * 1024 * 1024 {
-        return Err("Remote image is larger than 20 MB".to_string());
-    }
-    image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
-    Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -982,6 +965,9 @@ mod tests {
             replay_gain_album_gain: String::new(),
             replay_gain_album_peak: String::new(),
             replay_gain_reference_loudness: String::new(),
+            modified_at: None,
+            added_at: None,
+            created_at: None,
         }
     }
 
@@ -1027,6 +1013,8 @@ mod tests {
             show_romanization: true,
             only_translation_if_available: false,
             remove_empty_lyric_lines: true,
+            lyric_line_order: Vec::new(),
+            remove_tag_line_keywords: Vec::new(),
             lyrics_conversion_mode: default_conversion_mode(),
         };
         let (update, changed) = build_update(&current, &fields, None, &config, "/");

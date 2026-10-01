@@ -40,6 +40,7 @@ pub(super) trait BatchProcessor: Send + Sync {
 pub(super) fn processor_for(task_type: &str) -> Result<Box<dyn BatchProcessor>, String> {
     match task_type {
         "editTags" => Ok(Box::new(super::edit::EditTagsProcessor)),
+        "deleteFiles" => Ok(Box::new(super::delete::DeleteFilesProcessor)),
         "matchMetadata" => Ok(Box::new(super::metadata::MatchMetadataProcessor)),
         "formatLyrics" => Ok(Box::new(super::lyrics::LyricsFormatProcessor)),
         "renameFiles" => Ok(Box::new(super::rename::RenameFilesProcessor)),
@@ -74,7 +75,7 @@ impl BatchProcessor for ReplayGainProcessor {
             ));
         }
 
-        let job_id = format!("{}:{}", context.task.task_id, context.item.item_id);
+        // Legacy tasks keep the documented default; execution never reads mutable settings.
         let target_loudness = context
             .task
             .config_json
@@ -85,7 +86,9 @@ impl BatchProcessor for ReplayGainProcessor {
                     .get("targetLoudness")
                     .and_then(serde_json::Value::as_f64)
             })
+            .filter(|value| value.is_finite() && (-30.0..=0.0).contains(value))
             .unwrap_or(crate::replay_gain::DEFAULT_TARGET_LOUDNESS_LUFS);
+        let job_id = format!("{}:{}", context.task.task_id, context.item.item_id);
         let analysis = analyze_track(
             job_id.clone(),
             path,

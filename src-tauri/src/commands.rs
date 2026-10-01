@@ -4,20 +4,23 @@ use crate::audio::{
 };
 use crate::batch::{generate_rename_previews, CharacterMappingRule, RenamePreview};
 use crate::config as app_config;
-use crate::config::DesktopSettings;
+use crate::config::{DesktopSettings, PluginBackup};
 use crate::database::IndexedTrack;
 use crate::models::{
-    ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, LibraryFolder, ReplayGainAnalysis,
-    ReplayGainProgress, ScanProgress, StorageInfo, TagUpdate, TrackCover,
+    AppLogEntry, ArtistSplitConfig, AudioTrack, BatchTask, BatchTaskItem, CustomTag, LibraryFolder,
+    LyricLineMatch, ReplayGainAnalysis, ReplayGainProgress, ScanProgress, StorageInfo, TagUpdate,
+    TrackCover,
 };
+use crate::path_access;
 use crate::paths::resolve_data_paths;
 use crate::plugins::installer as plugin_installer;
 use crate::plugins::manifest::{PluginInstallPreview, PluginInstallResult, SourcePlugin};
 use crate::plugins::runtime as plugin_runtime;
 use crate::replay_gain::analyze_track;
+
 use crate::AppState;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -32,9 +35,10 @@ static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 pub(crate) async fn load_source_plugins(
     app: AppHandle,
     state: State<'_, AppState>,
+    locale: Option<String>,
 ) -> Result<Vec<SourcePlugin>, String> {
     let paths = resolve_data_paths(&app)?;
-    plugin_installer::load_plugins(&state.database, &paths.plugins).await
+    plugin_installer::load_plugins(&state.database, &paths.plugins, locale.as_deref()).await
 }
 
 #[tauri::command]
@@ -44,7 +48,9 @@ pub(crate) async fn install_source_plugin_archive(
     archive_path: String,
     allow_downgrade: bool,
     selected_roots: Option<Vec<String>>,
+    locale: Option<String>,
 ) -> Result<PluginInstallResult, String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&archive_path)).await?;
     let paths = resolve_data_paths(&app)?;
     plugin_installer::install_archive(
         &state.database,
@@ -52,6 +58,7 @@ pub(crate) async fn install_source_plugin_archive(
         Path::new(&archive_path),
         allow_downgrade,
         selected_roots,
+        locale.as_deref(),
     )
     .await
 }
@@ -74,6 +81,7 @@ pub(crate) async fn set_plugin_source_enabled(
     plugin_id: String,
     source_kind: String,
     enabled: bool,
+    locale: Option<String>,
 ) -> Result<Vec<SourcePlugin>, String> {
     let paths = resolve_data_paths(&app)?;
     plugin_installer::set_source_enabled(
@@ -82,6 +90,7 @@ pub(crate) async fn set_plugin_source_enabled(
         &plugin_id,
         &source_kind,
         enabled,
+        locale.as_deref(),
     )
     .await
 }
@@ -92,10 +101,48 @@ pub(crate) async fn reorder_plugin_sources(
     state: State<'_, AppState>,
     source_kind: String,
     plugin_ids: Vec<String>,
+    locale: Option<String>,
 ) -> Result<Vec<SourcePlugin>, String> {
     let paths = resolve_data_paths(&app)?;
-    plugin_installer::reorder_sources(&state.database, &paths.plugins, &source_kind, plugin_ids)
-        .await
+    plugin_installer::reorder_sources(
+        &state.database,
+        &paths.plugins,
+        &source_kind,
+        plugin_ids,
+        locale.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn set_source_plugin_enabled(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    enabled: bool,
+    locale: Option<String>,
+) -> Result<Vec<SourcePlugin>, String> {
+    let paths = resolve_data_paths(&app)?;
+    plugin_installer::set_enabled(
+        &state.database,
+        &paths.plugins,
+        &plugin_id,
+        enabled,
+        locale.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn set_source_plugin_order(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    plugin_ids: Vec<String>,
+    locale: Option<String>,
+) -> Result<Vec<SourcePlugin>, String> {
+    state.database.set_plugin_order(&plugin_ids).await?;
+    let paths = resolve_data_paths(&app)?;
+    plugin_installer::load_plugins(&state.database, &paths.plugins, locale.as_deref()).await
 }
 
 #[tauri::command]
@@ -104,9 +151,17 @@ pub(crate) async fn save_source_plugin_settings(
     state: State<'_, AppState>,
     plugin_id: String,
     config: serde_json::Value,
+    locale: Option<String>,
 ) -> Result<Vec<SourcePlugin>, String> {
     let paths = resolve_data_paths(&app)?;
-    plugin_installer::save_settings(&state.database, &paths.plugins, &plugin_id, config).await
+    plugin_installer::save_settings(
+        &state.database,
+        &paths.plugins,
+        &plugin_id,
+        config,
+        locale.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -114,9 +169,16 @@ pub(crate) async fn uninstall_source_plugin(
     app: AppHandle,
     state: State<'_, AppState>,
     plugin_id: String,
+    locale: Option<String>,
 ) -> Result<Vec<SourcePlugin>, String> {
     let paths = resolve_data_paths(&app)?;
-    plugin_installer::uninstall(&state.database, &paths.plugins, &plugin_id).await
+    plugin_installer::uninstall(
+        &state.database,
+        &paths.plugins,
+        &plugin_id,
+        locale.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -126,15 +188,16 @@ pub(crate) async fn invoke_source_plugin(
     plugin_id: String,
     function_name: String,
     request: serde_json::Value,
+    locale: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let paths = resolve_data_paths(&app)?;
-    let plugin = plugin_installer::load_plugins(&state.database, &paths.plugins)
+    let plugin = plugin_installer::load_plugins(&state.database, &paths.plugins, locale.as_deref())
         .await?
         .into_iter()
         .find(|plugin| plugin.manifest.id == plugin_id)
         .ok_or_else(|| "Plugin was not found".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        plugin_runtime::invoke(&plugin, &function_name, request)
+        plugin_runtime::invoke(&plugin, &function_name, request, locale.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -145,78 +208,67 @@ pub(crate) async fn fetch_remote_image(
     url: String,
     max_size: Option<u32>,
 ) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let parsed = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err("Only HTTP and HTTPS image URLs are supported".to_string());
-        }
-        let response = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .map_err(|error| error.to_string())?
-            .get(parsed)
-            .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|error| error.to_string())?;
-        let mime = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(';').next())
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        if !mime.starts_with("image/") {
-            return Err(format!("Remote resource is not an image: {mime}"));
-        }
-        if response
-            .content_length()
-            .is_some_and(|length| length > 20 * 1024 * 1024)
-        {
-            return Err("Remote image is larger than 20 MB".to_string());
-        }
-        let bytes = response.bytes().map_err(|error| error.to_string())?;
-        if bytes.len() > 20 * 1024 * 1024 {
-            return Err("Remote image is larger than 20 MB".to_string());
-        }
-        use base64::Engine;
-        if let Some(max_size) = max_size {
-            let max_size = max_size.clamp(64, 4096);
-            let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
-            let resized = image.thumbnail(max_size, max_size);
-            let mut output = std::io::Cursor::new(Vec::new());
-            resized
-                .write_to(&mut output, image::ImageFormat::Png)
-                .map_err(|error| error.to_string())?;
-            return Ok(format!(
-                "data:image/png;base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(output.into_inner())
-            ));
-        }
-        Ok(format!(
-            "data:{mime};base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(bytes)
-        ))
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || crate::remote_image::fetch(&url, max_size))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
 pub(crate) async fn create_batch_task(
+    app: AppHandle,
     state: State<'_, AppState>,
     task_type: String,
     song_paths: Vec<String>,
-    config_json: Option<String>,
+    mut config_json: Option<String>,
 ) -> Result<BatchTask, String> {
+    if task_type == "replayGain" {
+        let mut config: serde_json::Value = match config_json.as_deref() {
+            Some(raw) => serde_json::from_str(raw)
+                .map_err(|error| format!("Invalid task config: {error}"))?,
+            None => serde_json::json!({}),
+        };
+        let object = config
+            .as_object_mut()
+            .ok_or("Task config must be an object")?;
+        object.insert(
+            "targetLoudness".into(),
+            serde_json::json!(app_config::load_desktop_settings(&app)?.replay_gain_target_loudness),
+        );
+        config_json = Some(config.to_string());
+    }
+    path_access::ensure_all_allowed(&app, &state, &song_paths).await?;
+    if let Some(destination) = batch_export_destination(&config_json) {
+        path_access::ensure_allowed(&app, &state, Path::new(&destination)).await?;
+    }
     state
         .database
         .create_batch_task(&task_type, &song_paths, config_json)
         .await
 }
 
+fn batch_export_destination(config_json: &Option<String>) -> Option<String> {
+    let raw = config_json.as_ref()?;
+    let config: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let destination = config.get("destinationDirectory")?.as_str()?;
+    let destination = destination.trim();
+    if destination.is_empty() {
+        None
+    } else {
+        Some(destination.to_string())
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn load_batch_tasks(state: State<'_, AppState>) -> Result<Vec<BatchTask>, String> {
     state.database.load_batch_tasks().await
+}
+
+#[tauri::command]
+pub(crate) async fn delete_batch_tasks(
+    state: State<'_, AppState>,
+    task_ids: Vec<String>,
+) -> Result<(), String> {
+    state.database.delete_batch_tasks(&task_ids).await
 }
 
 #[tauri::command]
@@ -317,6 +369,8 @@ pub(crate) async fn analyze_replay_gain(
     if job_id.trim().is_empty() {
         return Err("ReplayGain job id is required".to_string());
     }
+    path_access::ensure_allowed(&app, &state, Path::new(&path)).await?;
+    let target_loudness = target_loudness_lufs;
     let cancelled = Arc::new(AtomicBool::new(false));
     {
         let mut active = state
@@ -337,7 +391,7 @@ pub(crate) async fn analyze_replay_gain(
         analyze_track(
             worker_job_id.clone(),
             Path::new(&worker_path),
-            target_loudness_lufs,
+            target_loudness,
             &cancelled,
             |progress| {
                 emit_replay_gain_progress(
@@ -419,11 +473,13 @@ pub(crate) async fn scan_folder(
     state: State<'_, AppState>,
     folder_path: String,
 ) -> Result<Vec<AudioTrack>, String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&folder_path)).await?;
     let root = PathBuf::from(&folder_path);
     if !root.is_dir() {
         return Err("Selected path is not a folder".to_string());
     }
     let artist_separator = app_config::load_artist_split_config(&app)?.artist_separator;
+    let ignore_short_audio = app_config::load_desktop_settings(&app)?.ignore_short_audio;
     let scan_key = normalize_path(&folder_path);
     {
         let mut active_scans = state
@@ -435,11 +491,20 @@ pub(crate) async fn scan_folder(
         }
     }
     let job_id = format!("scan-{}", NEXT_SCAN_ID.fetch_add(1, Ordering::Relaxed));
-    let scan_signature = format!("audio-summary-v1|artist-separator={artist_separator}");
-    let existing_index = state
+    let scan_signature = format!("audio-summary-taglib-v2|artist-separator={artist_separator}");
+    let existing_index = match state
         .database
         .load_folder_index(&folder_path, &scan_signature)
-        .await?;
+        .await
+    {
+        Ok(index) => index,
+        Err(error) => {
+            if let Ok(mut active_scans) = state.active_scans.lock() {
+                active_scans.remove(&scan_key);
+            }
+            return Err(error);
+        }
+    };
     let result: Result<Vec<AudioTrack>, String> = async {
         emit_scan_progress(
             &app,
@@ -463,6 +528,7 @@ pub(crate) async fn scan_folder(
                 &scan_job_id,
                 &scan_folder_path,
                 &existing_index,
+                ignore_short_audio,
             )
         })
         .await
@@ -482,18 +548,37 @@ pub(crate) async fn scan_folder(
             .database
             .persist_folder_scan(&folder_path, &scan_signature, &scan.tracks)
             .await?;
+        let mut tracks = scan
+            .tracks
+            .into_iter()
+            .map(AudioTrack::into_summary)
+            .collect::<Vec<_>>();
+        let stored_paths = tracks
+            .iter()
+            .map(|track| track.path.clone())
+            .collect::<Vec<_>>();
+        let stored_times = state
+            .database
+            .load_track_times_by_paths(&stored_paths)
+            .await?;
+        for track in &mut tracks {
+            if let Some((added_at, modified_at)) = stored_times.get(&track.path) {
+                track.added_at = *added_at;
+                track.modified_at = modified_at.or(track.modified_at);
+            }
+        }
         emit_scan_progress(
             &app,
             &job_id,
             &folder_path,
             "completed",
-            scan.tracks.len(),
-            scan.tracks.len(),
+            tracks.len(),
+            tracks.len(),
             scan.errors,
             "completed",
             None,
         );
-        Ok(scan.tracks)
+        Ok(tracks)
     }
     .await;
     if let Err(error) = &result {
@@ -516,25 +601,43 @@ pub(crate) async fn scan_folder(
 }
 
 #[tauri::command]
-pub(crate) async fn read_audio_file(app: AppHandle, path: String) -> Result<AudioTrack, String> {
+pub(crate) async fn read_audio_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<AudioTrack, String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&path)).await?;
     let artist_separator = app_config::load_artist_split_config(&app)?.artist_separator;
-    tauri::async_runtime::spawn_blocking(move || {
+    let mut track = tauri::async_runtime::spawn_blocking(move || {
         read_track(Path::new(&path), &artist_separator, ArtworkMode::Full)
             .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    let (_, added_at) = state.database.load_track_timestamps(&track.path).await?;
+    track.added_at = added_at;
+    Ok(track)
 }
 
 #[tauri::command]
-pub(crate) async fn read_image_file(path: String) -> Result<String, String> {
+pub(crate) async fn read_image_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&path)).await?;
     tauri::async_runtime::spawn_blocking(move || read_image_data_url(Path::new(&path)))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub(crate) async fn read_text_file(path: String) -> Result<String, String> {
+pub(crate) async fn read_text_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&path)).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
         if metadata.len() > 5 * 1024 * 1024 {
@@ -547,7 +650,13 @@ pub(crate) async fn read_text_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub(crate) async fn write_text_file(path: String, contents: String) -> Result<(), String> {
+pub(crate) async fn write_text_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    contents: String,
+) -> Result<(), String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&path)).await?;
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(parent) = Path::new(&path).parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -559,7 +668,13 @@ pub(crate) async fn write_text_file(path: String, contents: String) -> Result<()
 }
 
 #[tauri::command]
-pub(crate) async fn write_image_file(path: String, data_url: String) -> Result<(), String> {
+pub(crate) async fn write_image_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    data_url: String,
+) -> Result<(), String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&path)).await?;
     tauri::async_runtime::spawn_blocking(move || write_image_data_url(Path::new(&path), &data_url))
         .await
         .map_err(|error| error.to_string())?
@@ -571,11 +686,15 @@ pub(crate) async fn save_audio_tags(
     state: State<'_, AppState>,
     update: TagUpdate,
 ) -> Result<AudioTrack, String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&update.path)).await?;
     let artist_separator = app_config::load_artist_split_config(&app)?.artist_separator;
-    let saved = tauri::async_runtime::spawn_blocking(move || save_tags(update, &artist_separator))
-        .await
-        .map_err(|error| error.to_string())??;
+    let mut saved =
+        tauri::async_runtime::spawn_blocking(move || save_tags(update, &artist_separator))
+            .await
+            .map_err(|error| error.to_string())??;
     state.database.update_track_summary(&saved).await?;
+    let (_, added_at) = state.database.load_track_timestamps(&saved.path).await?;
+    saved.added_at = added_at;
     Ok(saved)
 }
 
@@ -597,8 +716,20 @@ pub(crate) async fn load_library_tracks(
 }
 
 #[tauri::command]
-pub(crate) async fn load_library_track(app: AppHandle, path: String) -> Result<AudioTrack, String> {
-    read_audio_file(app, path).await
+pub(crate) async fn load_library_tracks_by_paths(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<AudioTrack>, String> {
+    state.database.load_tracks_by_paths(&paths).await
+}
+
+#[tauri::command]
+pub(crate) async fn load_library_track(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<AudioTrack, String> {
+    read_audio_file(app, state, path).await
 }
 
 #[tauri::command]
@@ -678,18 +809,133 @@ pub(crate) fn save_desktop_settings(
 }
 
 #[tauri::command]
+pub(crate) async fn export_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    destination: String,
+) -> Result<(), String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&destination)).await?;
+    let destination = PathBuf::from(&destination);
+    if let Some(parent) = destination.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+    }
+    let plugins = state
+        .database
+        .load_plugin_records()
+        .await?
+        .into_iter()
+        .map(|record| PluginBackup {
+            id: record.id,
+            enabled: record.enabled,
+            sort_order: record.sort_order,
+            settings_json: record.settings_json,
+        })
+        .collect();
+    app_config::export_config(&app, &destination, plugins)
+}
+
+#[tauri::command]
+pub(crate) async fn load_custom_tags(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<CustomTag>, String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&path)).await?;
+    tauri::async_runtime::spawn_blocking(move || crate::audio::read_custom_tags(Path::new(&path)))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn import_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source: String,
+) -> Result<DesktopSettings, String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&source)).await?;
+    let (settings, plugins) = app_config::import_config(&app, Path::new(&source))?;
+    let existing = state.database.load_plugin_records().await?;
+    let existing_ids = existing
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<HashSet<_>>();
+    for plugin in &plugins {
+        if existing_ids.contains(&plugin.id) {
+            state
+                .database
+                .set_plugin_enabled(&plugin.id, plugin.enabled)
+                .await?;
+            state
+                .database
+                .save_plugin_settings(&plugin.id, &plugin.settings_json)
+                .await?;
+        }
+    }
+    let mut ordered_ids = plugins
+        .iter()
+        .filter(|plugin| existing_ids.contains(&plugin.id))
+        .collect::<Vec<_>>();
+    ordered_ids.sort_by_key(|plugin| plugin.sort_order);
+    let mut order = ordered_ids
+        .into_iter()
+        .map(|plugin| plugin.id.clone())
+        .collect::<Vec<_>>();
+    let imported_ids = order.iter().cloned().collect::<HashSet<_>>();
+    order.extend(
+        existing
+            .iter()
+            .filter(|record| !imported_ids.contains(&record.id))
+            .map(|record| record.id.clone()),
+    );
+    if !order.is_empty() {
+        state.database.set_plugin_order(&order).await?;
+    }
+    Ok(settings)
+}
+
+#[tauri::command]
+pub(crate) async fn search_lyrics_lines(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<LyricLineMatch>, String> {
+    state
+        .database
+        .search_lyrics_lines(&query, limit.unwrap_or(50))
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn load_app_logs(
+    state: State<'_, AppState>,
+    level: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<AppLogEntry>, String> {
+    state
+        .database
+        .load_app_logs(level, limit.unwrap_or(200))
+        .await
+}
+
+#[tauri::command]
 pub(crate) async fn upsert_library_folder(
+    app: AppHandle,
     state: State<'_, AppState>,
     folder: LibraryFolder,
 ) -> Result<(), String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&folder.path)).await?;
     state.database.upsert_folder(folder).await
 }
 
 #[tauri::command]
 pub(crate) async fn remove_library_folder(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
 ) -> Result<(), String> {
+    path_access::ensure_allowed(&app, &state, Path::new(&path)).await?;
     state.database.remove_folder(&path).await
 }
 
@@ -711,6 +957,7 @@ fn scan_tracks(
     job_id: &str,
     folder_path: &str,
     existing_index: &HashMap<String, IndexedTrack>,
+    ignore_short_audio: bool,
 ) -> ScanResult {
     let mut enumeration_errors = 0;
     let paths = WalkDir::new(root)
@@ -753,11 +1000,11 @@ fn scan_tracks(
                 paths
                     .par_iter()
                     .filter_map(|path| {
-                        let track = unchanged_track(path, existing_index).or_else(|| {
-                            read_track(path, artist_separator, ArtworkMode::None)
-                                .ok()
-                                .map(AudioTrack::into_summary)
-                        });
+                        let track = unchanged_track(path, existing_index)
+                            .or_else(|| read_track(path, artist_separator, ArtworkMode::None).ok())
+                            .filter(|track| {
+                                !should_skip_short_audio(track.duration_seconds, ignore_short_audio)
+                            });
                         if track.is_none() {
                             errors.fetch_add(1, Ordering::Relaxed);
                         }
@@ -784,11 +1031,11 @@ fn scan_tracks(
             paths
                 .iter()
                 .filter_map(|path| {
-                    unchanged_track(path, existing_index).or_else(|| {
-                        read_track(path, artist_separator, ArtworkMode::None)
-                            .ok()
-                            .map(AudioTrack::into_summary)
-                    })
+                    unchanged_track(path, existing_index)
+                        .or_else(|| read_track(path, artist_separator, ArtworkMode::None).ok())
+                        .filter(|track| {
+                            !should_skip_short_audio(track.duration_seconds, ignore_short_audio)
+                        })
                 })
                 .collect()
         });
@@ -853,9 +1100,21 @@ fn normalize_path(path: &str) -> String {
     path.replace('\\', "/").to_lowercase()
 }
 
+fn should_skip_short_audio(duration_seconds: u64, enabled: bool) -> bool {
+    enabled && duration_seconds <= 60
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_audio_filter_skips_audio_at_or_below_sixty_seconds() {
+        assert!(should_skip_short_audio(60, true));
+        assert!(should_skip_short_audio(1, true));
+        assert!(!should_skip_short_audio(61, true));
+        assert!(!should_skip_short_audio(1, false));
+    }
 
     #[test]
     fn unchanged_files_reuse_the_stored_summary() {
@@ -922,6 +1181,9 @@ mod tests {
             replay_gain_album_gain: String::new(),
             replay_gain_album_peak: String::new(),
             replay_gain_reference_loudness: String::new(),
+            modified_at: None,
+            added_at: None,
+            created_at: None,
         }
     }
 }
