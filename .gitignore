@@ -30,4 +30,5 @@ src-tauri/native/taglib-build-*/
 
 # Local agent state
 .opencode/
+.ccgui/
 test-lofty/target/
