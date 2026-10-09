@@ -230,9 +230,11 @@ pub(crate) async fn create_batch_task(
         let object = config
             .as_object_mut()
             .ok_or("Task config must be an object")?;
+        let settings = app_config::load_desktop_settings(&app)?;
+        object.insert("peakMode".into(), serde_json::json!(settings.replay_gain_peak_mode));
         object.insert(
             "targetLoudness".into(),
-            serde_json::json!(app_config::load_desktop_settings(&app)?.replay_gain_target_loudness),
+            serde_json::json!(settings.replay_gain_target_loudness),
         );
         config_json = Some(config.to_string());
     }
@@ -365,6 +367,7 @@ pub(crate) async fn analyze_replay_gain(
     job_id: String,
     path: String,
     target_loudness_lufs: f64,
+    peak_mode: crate::replay_gain::PeakMode,
 ) -> Result<ReplayGainAnalysis, String> {
     if job_id.trim().is_empty() {
         return Err("ReplayGain job id is required".to_string());
@@ -392,6 +395,7 @@ pub(crate) async fn analyze_replay_gain(
             worker_job_id.clone(),
             Path::new(&worker_path),
             target_loudness,
+            peak_mode,
             &cancelled,
             |progress| {
                 emit_replay_gain_progress(
@@ -406,7 +410,7 @@ pub(crate) async fn analyze_replay_gain(
         )
     })
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.to_string()).and_then(|result| result);
 
     state
         .active_replay_gain
@@ -480,7 +484,7 @@ pub(crate) async fn scan_folder(
     }
     let artist_separator = app_config::load_artist_split_config(&app)?.artist_separator;
     let ignore_short_audio = app_config::load_desktop_settings(&app)?.ignore_short_audio;
-    let scan_key = normalize_path(&folder_path);
+    let scan_key = crate::database::folder_path_key(&folder_path);
     {
         let mut active_scans = state
             .active_scans
@@ -1094,10 +1098,6 @@ fn emit_scan_progress(
             message,
         },
     );
-}
-
-fn normalize_path(path: &str) -> String {
-    path.replace('\\', "/").to_lowercase()
 }
 
 fn should_skip_short_audio(duration_seconds: u64, enabled: bool) -> bool {

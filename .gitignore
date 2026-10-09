@@ -32,3 +32,10 @@ src-tauri/native/taglib-build-*/
 .opencode/
 .ccgui/
 test-lofty/target/
+
+# Local browser verification artifacts
+.playwright-cli/
+output/playwright/
+
+# Native CMake build directory
+build/

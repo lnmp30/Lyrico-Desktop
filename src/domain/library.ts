@@ -1,4 +1,6 @@
 import type { ArtistSplitConfig, AudioTrack, BatchCandidate, LibraryFolder } from "../app/types";
+import { normalizedArtistKey } from "./artistKey";
+import { deduplicateFolders } from "./libraryFolders";
 
 const searchTextCache = new WeakMap<AudioTrack, string>();
 
@@ -94,12 +96,6 @@ export const builtinArtistSeparators = [
   { id: "featuring", value: " featuring ", defaultEnabled: false, displayName: "featuring" },
 ] as const;
 
-export const builtinNoSplitArtists = [
-  { id: "simon_and_garfunkel", name: "Simon & Garfunkel", defaultEnabled: true },
-  { id: "earth_wind_and_fire", name: "Earth, Wind & Fire", defaultEnabled: true },
-  { id: "bump_of_chicken", name: "BUMP OF CHICKEN", defaultEnabled: true },
-] as const;
-
 export const defaultArtistSplitConfig: ArtistSplitConfig = {
   enabled: true,
   artistSeparator: "/",
@@ -187,15 +183,8 @@ export function effectiveArtistSeparators(config: ArtistSplitConfig) {
 }
 
 export function effectiveNoSplitArtists(config: ArtistSplitConfig) {
-  const builtin = builtinNoSplitArtists
-    .filter((item) => config.builtinNoSplitArtistOverrides[item.id] ?? item.defaultEnabled)
-    .map((item) => item.name);
   const custom = config.customNoSplitArtists.filter((item) => item.enabled).map((item) => item.name);
-  return [...builtin, ...custom].filter((value) => value.trim()).filter((value, index, all) => all.findIndex((candidate) => normalizedArtistKey(candidate) === normalizedArtistKey(value)) === index);
-}
-
-function normalizedArtistKey(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return custom.filter((value) => value.trim()).filter((value, index, all) => all.findIndex((candidate) => normalizedArtistKey(candidate) === normalizedArtistKey(value)) === index);
 }
 
 function startsWithIgnoreCase(input: string, value: string, index: number) {
@@ -217,7 +206,7 @@ export function tracksInFolder(tracks: AudioTrack[], folder: LibraryFolder) {
 }
 
 export function buildLibraryFolderTree(folders: LibraryFolder[], tracks: AudioTrack[]) {
-  return folders.map((folder) => buildFolderRoot(folder, tracks));
+  return deduplicateFolders(folders).map((folder) => buildFolderRoot(folder, tracks));
 }
 
 export function tracksInDirectory(tracks: AudioTrack[], directoryPath: string, includeSubfolders: boolean) {
@@ -263,10 +252,14 @@ function buildFolderRoot(folder: LibraryFolder, tracks: AudioTrack[]): LibraryFo
   const root = createFolderNode(rootPath, rootPath, undefined);
   const nodes = new Map<string, LibraryFolderNode>([[root.key, root]]);
   const rootPrefix = root.key.endsWith("/") ? root.key : `${root.key}/`;
+  const seen = new Set<string>();
 
   for (const track of tracks) {
     const trackPath = normalizeFileSystemPath(track.path);
     if (!trackPath.toLocaleLowerCase().startsWith(rootPrefix)) continue;
+    const trackKey = trackPath.toLocaleLowerCase();
+    if (seen.has(trackKey)) continue;
+    seen.add(trackKey);
     const directory = parentDirectory(trackPath);
     const relativeDirectory = directory.slice(rootPath.length).replace(/^\/+/, "");
     let parent = root;

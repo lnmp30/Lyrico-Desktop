@@ -136,6 +136,7 @@ export type DesktopSettings = {
   renameCharacterMappings: Record<string, string>;
   themeMode: "system" | "light" | "dark";
   replayGainTargetLoudness: number;
+  replayGainPeakMode: "samplePeak" | "truePeak";
   editFieldVisibility: Record<string, boolean>;
   editFieldOrder: string[];
 };
@@ -162,7 +163,11 @@ export type PluginConfigField = {
   dependency?: unknown;
 };
 
+export type PluginSourceKind = "aggregated" | "metadata" | "lyrics" | "covers";
+export type PluginSourceState = { enabled: boolean; priority: number };
+
 export type SourcePlugin = {
+  sourceStates: Partial<Record<PluginSourceKind, PluginSourceState>>;
   id: string;
   name: string;
   versionCode: number;
@@ -230,6 +235,7 @@ export type BatchCandidate = {
 export type BatchTaskStatus = "queued" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
 
 export type BatchTask = {
+  progress?: number;
   taskId: string;
   taskType: string;
   status: BatchTaskStatus;

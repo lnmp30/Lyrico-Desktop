@@ -1,18 +1,22 @@
-import { ApiOutlined, ArrowDownOutlined, ArrowUpOutlined, AudioOutlined, EditOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, InfoCircleOutlined, ImportOutlined, ExportOutlined, ScissorOutlined, SoundOutlined, SyncOutlined } from "@ant-design/icons";
-import { App as AntApp, Avatar, Button, Card, Checkbox, Collapse, Flex, Input, InputNumber, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, type TableColumnsType } from "antd";
+import { ApiOutlined, AudioOutlined, EditOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, InfoCircleOutlined, ImportOutlined, ExportOutlined, ScissorOutlined, SoundOutlined, SyncOutlined } from "@ant-design/icons";
+import { App as AntApp, Avatar, Button, Collapse, Flex, Input, InputNumber, Modal, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, type TableColumnsType } from "antd";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { ArtistSplitConfig, DesktopSettings, LyricLineTrack } from "../app/types";
 import type { LanguagePreference } from "../i18n";
+import { SortableList } from "../components/SortableList";
+import appIcon from "../assets/app-icon.png";
 import { ArtistSplitSettings } from "../components/ArtistSplitSettings";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
 import { exportConfig, importConfig, loadAppLogs, pickPaths, pickSavePath, writeTextFile, type AppLogEntry, type ThemeMode } from "../backend/audioApi";
 import { normalizeCleanupKeywords, normalizeLyricLineOrder } from "../domain/lyricsSettings";
-import { normalizeEditFieldOrder } from "../domain/editFieldSettings";
+import { normalizeEditFieldOrder, EDIT_FIELD_LABEL_KEYS, REPLAY_GAIN_BLOCK_KEY, toEditFieldBlocks, withEditFieldBlockMembers } from "../domain/editFieldSettings";
 import { parseTimeValue } from "../utils/format";
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 function LyricLineOrderEditor({ value, onChange }: { value: LyricLineTrack[]; onChange: (value: LyricLineTrack[]) => void }) {
   const { t } = useTranslation();
@@ -21,26 +25,9 @@ function LyricLineOrderEditor({ value, onChange }: { value: LyricLineTrack[]; on
     romanization: t("settings.lyricRomanization"),
     translation: t("settings.lyricTranslation"),
   };
-  function move(index: number, direction: -1 | 1) {
-    const next = index + direction;
-    if (next < 0 || next >= value.length) return;
-    const copy = value.slice();
-    [copy[index], copy[next]] = [copy[next], copy[index]];
-    onChange(copy);
-  }
-  return (
-    <Flex vertical gap={8}>
-      {value.map((item, index) => (
-        <Flex key={item} align="center" gap={8}>
-          <Text type="secondary">{index + 1}</Text>
-          <Text style={{ width: 72 }}>{labels[item]}</Text>
-          <Button size="small" aria-label={t("settings.moveUp")} icon={<ArrowUpOutlined />} disabled={index === 0} onClick={() => move(index, -1)} />
-          <Button size="small" aria-label={t("settings.moveDown")} icon={<ArrowDownOutlined />} disabled={index === value.length - 1} onClick={() => move(index, 1)} />
-        </Flex>
-      ))}
-      <Text type="secondary">{t("settings.lyricLineOrderPreview", { order: value.map((item) => labels[item]).join(" → ") })}</Text>
-    </Flex>
-  );
+  return <SortableList items={value} label={t("settings.lyricLineOrder")} labelFor={key => labels[key as LyricLineTrack]}
+    onChange={next => onChange(next as LyricLineTrack[])} renderItem={key => <Text>{labels[key as LyricLineTrack]}</Text>} />;
+
 }
 
 export function SettingsPage({
@@ -64,16 +51,13 @@ export function SettingsPage({
   const update = <K extends keyof DesktopSettings>(key: K, value: DesktopSettings[K]) => onChangeSettings({ ...settings, [key]: value });
 
   return (
-    <div className="workspace page-stack settings-view">
-      <div>
-        <Title level={2}>{t("settings.title")}</Title>
-        <Text type="secondary">{t("settings.descriptionEffective")}</Text>
-      </div>
+    <div className="page-shell settings-view">
+      <PageHeader title={t("settings.title")} />
 
-      <Card className="content-card settings-card" styles={{ body: { padding: 0 } }}>
+      <div className="page-body settings-body">
         <Tabs
           className="settings-tabs"
-          tabPosition="left"
+          tabPlacement="start"
           items={[
             {
               key: "interface",
@@ -165,8 +149,8 @@ export function SettingsPage({
               children: (
                 <SettingsSection title={t("settings.library")}>
                   <SettingRow title={t("settings.artistPosterFolder")} description={t("settings.artistPosterFolderHint")}>
-                    <Space>
-                      <Text type="secondary" ellipsis style={{ maxWidth: 260 }}>{settings.artistPosterFolder || t("settings.artistPosterFolderNone")}</Text>
+                    <Space wrap className="settings-path-control">
+                      <Text type="secondary" ellipsis={{ tooltip: settings.artistPosterFolder }} style={{ maxWidth: 260 }}>{settings.artistPosterFolder || t("settings.artistPosterFolderNone")}</Text>
                       <Button
                         icon={<FolderOpenOutlined />}
                         onClick={async () => {
@@ -194,53 +178,8 @@ export function SettingsPage({
               icon: <EditOutlined />,
               children: (
                   <SettingsSection title={t("settings.editFields")}>
-                    <Typography.Paragraph type="secondary">{t("settings.editFieldsHint")}</Typography.Paragraph>
-                    <Space direction="vertical" style={{ width: "100%" }} size={4}>
-                      {normalizeEditFieldOrder(settings.editFieldOrder).map((key, index, order) => (
-                        <Flex key={key} justify="space-between" align="center">
-                          <Text>{t(`settings.editGroup.${key}`)}</Text>
-                          <Space.Compact>
-                            <Button
-                              size="small"
-                              icon={<ArrowUpOutlined />}
-                              disabled={index === 0}
-                              onClick={() => {
-                                const next = order.slice();
-                                [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                                onChangeSettings({ ...settings, editFieldOrder: next });
-                              }}
-                            />
-                            <Button
-                              size="small"
-                              icon={<ArrowDownOutlined />}
-                              disabled={index === order.length - 1}
-                              onClick={() => {
-                                const next = order.slice();
-                                [next[index], next[index + 1]] = [next[index + 1], next[index]];
-                                onChangeSettings({ ...settings, editFieldOrder: next });
-                              }}
-                            />
-                          </Space.Compact>
-                        </Flex>
-                      ))}
-                    </Space>
-                    <div className="edit-field-grid">
-                    {EDIT_FIELD_LABEL_KEYS.map(([key, label]) => (
-                      <Checkbox
-                        key={key}
-                        checked={settings.editFieldVisibility?.[key] !== false}
-                        onChange={(event) =>
-                          onChangeSettings({
-                            ...settings,
-                            editFieldVisibility: { ...settings.editFieldVisibility, [key]: event.target.checked },
-                          })
-                        }
-                      >
-                        {t(label)}
-                      </Checkbox>
-                    ))}
-                  </div>
-                </SettingsSection>
+                    <EditFieldOrderEditor settings={settings} onChange={onChangeSettings} />
+                  </SettingsSection>
               ),
             },
             {
@@ -250,15 +189,23 @@ export function SettingsPage({
               children: (
                 <SettingsSection title={t("settings.replayGain")}>
                   <SettingRow title={t("settings.replayGainTarget")} description={t("settings.replayGainTargetHint")}>
-                    <InputNumber
-                      min={-30}
-                      max={0}
-                      step={0.5}
-                      precision={1}
-                      value={settings.replayGainTargetLoudness ?? -18}
-                      onChange={(value) => update("replayGainTargetLoudness", value ?? -18)}
-                      addonAfter="LUFS"
-                    />
+                    <Flex gap={8} align="center">
+                      <InputNumber
+                        min={-30}
+                        max={0}
+                        step={0.5}
+                        precision={1}
+                        value={settings.replayGainTargetLoudness ?? -18}
+                        onChange={(value) => update("replayGainTargetLoudness", value ?? -18)}
+                      />
+                      <Text type="secondary">LUFS</Text>
+                    </Flex>
+                  </SettingRow>
+                  <SettingRow title={t("settings.replayGainPeakMode")} description={t("settings.replayGainPeakHint")}>
+                    <Select value={settings.replayGainPeakMode ?? "samplePeak"} onChange={value => update("replayGainPeakMode", value)} options={[
+                      { value: "samplePeak", label: t("settings.replayGainSamplePeak") },
+                      { value: "truePeak", label: t("settings.replayGainTruePeak") },
+                    ]} />
                   </SettingRow>
                 </SettingsSection>
               ),
@@ -296,13 +243,103 @@ export function SettingsPage({
             },
           ]}
         />
-      </Card>
+      </div>
     </div>
   );
 }
 
 function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
   return <section className="settings-section"><Typography.Title level={4}>{title}</Typography.Title>{children}</section>;
+}
+
+/**
+ * Field order editor. Ordering works on blocks, not raw fields: the ReplayGain values are one
+ * measurement and always move as one adjacent group. A composite row opens a dialog to reorder
+ * and toggle its members, mirroring the mobile app's component sheet. See docs/ui-layout.md §9.6.
+ */
+function EditFieldOrderEditor({ settings, onChange }: { settings: DesktopSettings; onChange: (settings: DesktopSettings) => void }) {
+  const { t } = useTranslation();
+  const [openBlock, setOpenBlock] = useState<string>();
+  const blocks = useMemo(() => toEditFieldBlocks(normalizeEditFieldOrder(settings.editFieldOrder)), [settings.editFieldOrder]);
+  const labelOf = (key: string) => t(EDIT_FIELD_LABEL_KEYS.find(([field]) => field === key)?.[1] ?? key);
+  const shown = (key: string) => settings.editFieldVisibility?.[key] !== false;
+  const setShown = (key: string, checked: boolean) =>
+    onChange({ ...settings, editFieldVisibility: { ...settings.editFieldVisibility, [key]: checked } });
+  const setMembersShown = (members: readonly string[], checked: boolean) =>
+    onChange({ ...settings, editFieldVisibility: { ...settings.editFieldVisibility, ...Object.fromEntries(members.map((key) => [key, checked])) } });
+
+  const composite = blocks.find((block) => block.key === openBlock && block.composite);
+
+  return (
+    <>
+      <SortableList
+        items={blocks.map((block) => block.key)}
+        label={t("settings.editFields")}
+        labelFor={(key) => (key === REPLAY_GAIN_BLOCK_KEY ? t("settings.replayGain") : labelOf(key))}
+        onChange={(keys) => {
+          const byKey = new Map(blocks.map((block) => [block.key, block]));
+          onChange({ ...settings, editFieldOrder: keys.flatMap((key) => byKey.get(key)?.fields ?? []) });
+        }}
+        renderItem={(key) => {
+          const block = blocks.find((candidate) => candidate.key === key);
+          if (!block?.composite) {
+            return <>
+              <Text>{labelOf(key)}</Text>
+              <Switch
+                size="small"
+                aria-label={t("settings.showField", { name: labelOf(key) })}
+                checked={shown(key)}
+                onChange={(checked) => setShown(key, checked)}
+              />
+            </>;
+          }
+          const allShown = block.fields.every(shown);
+          return <>
+            <button type="button" className="edit-field-group-open" onClick={() => setOpenBlock(block.key)}>
+              <Text>{t("settings.replayGain")}</Text>
+              <span className="edit-field-tag">{t("settings.fieldGroupTag")}</span>
+            </button>
+            <Switch
+              size="small"
+              aria-label={t("settings.showField", { name: t("settings.replayGain") })}
+              checked={allShown}
+              onChange={(checked) => setMembersShown(block.fields, checked)}
+            />
+          </>;
+        }}
+      />
+
+      <Modal centered
+        open={Boolean(composite)}
+        title={t("settings.replayGain")}
+        footer={null}
+        width={420}
+        onCancel={() => setOpenBlock(undefined)}
+      >
+        <Text type="secondary" className="edit-field-group-hint">{t("settings.groupMembersHint")}</Text>
+        {composite ? (
+          <SortableList
+            items={composite.fields}
+            label={t("settings.replayGain")}
+            labelFor={labelOf}
+            onChange={(members) => onChange({
+              ...settings,
+              editFieldOrder: withEditFieldBlockMembers(settings.editFieldOrder, composite.key, members),
+            })}
+            renderItem={(field) => <>
+              <Text>{labelOf(field)}</Text>
+              <Switch
+                size="small"
+                aria-label={t("settings.showField", { name: labelOf(field) })}
+                checked={shown(field)}
+                onChange={(checked) => setShown(field, checked)}
+              />
+            </>}
+          />
+        ) : null}
+      </Modal>
+    </>
+  );
 }
 
 function SettingRow({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
@@ -406,28 +443,7 @@ function BackupImportButton({ onImported }: { onImported: () => void }) {
 
 const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 
-const EDIT_FIELD_LABEL_KEYS: Array<[string, string]> = [
-  ["title", "details.titleField"],
-  ["artist", "details.artist"],
-  ["albumArtist", "details.albumArtist"],
-  ["album", "details.album"],
-  ["year", "details.year"],
-  ["language", "details.language"],
-  ["genre", "details.genre"],
-  ["trackNumber", "details.track"],
-  ["discNumber", "details.disc"],
-  ["composer", "details.composer"],
-  ["lyricist", "details.lyricist"],
-  ["copyright", "details.copyright"],
-  ["comment", "details.comment"],
-  ["rating", "details.rating"],
-  ["lyrics", "details.lyrics"],
-  ["replayGainTrackGain", "tasks.trackGain"],
-  ["replayGainTrackPeak", "tasks.trackPeak"],
-  ["replayGainAlbumGain", "tasks.albumGain"],
-  ["replayGainAlbumPeak", "tasks.albumPeak"],
-  ["replayGainReferenceLoudness", "details.referenceLoudness"],
-];
+
 
 function AppLogsSection() {
   const { t } = useTranslation();
@@ -500,7 +516,7 @@ function AppLogsSection() {
   ];
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+    <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
       <Space wrap>
         <Select
           allowClear
@@ -522,7 +538,7 @@ function AppLogsSection() {
           {t("settings.logsRefresh")}
         </Button>
         <Button onClick={() => void exportLogs()} disabled={visibleLogs.length === 0}>{t("settings.logsExport")}</Button>
-        <Text type="secondary">{`${visibleLogs.length}`}</Text>
+        <Text type="secondary">{t("settings.logsCount", { count: visibleLogs.length })}</Text>
       </Space>
       <Table
         rowKey="id"
@@ -538,7 +554,7 @@ function AppLogsSection() {
             </Text>
           ),
         }}
-        locale={{ emptyText: t("settings.logsEmpty") }}
+        locale={{ emptyText: <EmptyState description={t("settings.logsEmpty")} /> }}
       />
     </Space>
   );
@@ -570,16 +586,12 @@ function AboutSection() {
   }, []);
 
   return (
-    <SettingsSection title={t("settings.about")}>
-      <SettingRow title={t("settings.product")}>
-        <Text>Lyrico</Text>
-      </SettingRow>
-      <SettingRow title={t("settings.version")}>
-        <Text>{version || "—"}</Text>
-      </SettingRow>
-      <SettingRow title={t("settings.framework")}>
-        <Text>Tauri 2 · React 19 · Ant Design 6</Text>
-      </SettingRow>
+    <section className="about-page">
+      <img className="about-app-icon" src={appIcon} alt="" />
+      <Typography.Title level={2}>Lyrico</Typography.Title>
+      <Text type="secondary">{t("settings.version")} {version || "—"}</Text>
+      <Typography.Paragraph>{t("settings.aboutDescription")}</Typography.Paragraph>
+      <Button type="link" onClick={() => void openUrl("https://github.com/Replica0110/Lyrico-Desktop")}>{t("settings.projectHomepage")}</Button>
       <Collapse
         className="about-collapse"
         items={[
@@ -591,7 +603,7 @@ function AboutSection() {
                 {OPEN_SOURCE_DEPENDENCIES.map((dependency) => (
                   <li key={dependency.name}>
                     <Text>{dependency.name}</Text>
-                    <Text type="secondary">{` · ${dependency.license}`}</Text>
+                    <Text type="secondary">{dependency.license}</Text>
                   </li>
                 ))}
               </ul>
@@ -604,7 +616,7 @@ function AboutSection() {
           },
         ]}
       />
-    </SettingsSection>
+    </section>
   );
 }
 

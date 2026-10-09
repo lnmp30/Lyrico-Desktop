@@ -1,3 +1,4 @@
+import { enabledPluginSources } from "../data/pluginSources";
 import {
   CalculatorOutlined,
   DeleteOutlined,
@@ -10,18 +11,32 @@ import {
   TagsOutlined,
 } from "@ant-design/icons";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { App, Button, Card, Checkbox, Input, InputNumber, Modal, Popconfirm, Progress, Rate, Select, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
+import { App, Button, Checkbox, Flex, Input, InputNumber, Modal, Progress, Rate, Select, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
 import { useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
 import type { AudioTrack, BatchTask, CharacterMappingRule, DesktopSettings, RenamePreview, SourcePlugin } from "../app/types";
 import { cancelBatchTask, createBatchTask, deleteBatchTasks, loadBatchTasks, pickPaths, previewBatchRename, readImageFile, retryFailedBatchItems, startBatchTask } from "../backend/audioApi";
 import { TrackArtwork } from "../components/TrackArtwork";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { LYRIC_FORMATS, type LyricFormat } from "../backend/lyricsApi";
 import { clearFinishedTask, currentActiveTask, isActiveTask, mergeBatchTaskSnapshot } from "../domain/batchTasks";
 import { buildMatchTargetModes, type BatchMatchMode } from "../domain/batchMatch";
 import { parseTimeValue } from "../utils/format";
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
+
+/** Text-only empty rows, matching the shared EmptyState instead of the antd illustration. */
+function NoSelectedSongs() {
+  const { t } = useTranslation();
+  return <EmptyState description={t("tasks.noSelection")} />;
+}
+
+function NoPendingChanges() {
+  const { t } = useTranslation();
+  return <EmptyState description={t("tasks.noChanges")} />;
+}
 
 type GainRow = {
   path: string;
@@ -103,6 +118,14 @@ const defaultTagLineKeywords = [
 
 const availableOperations = new Set<BatchOperation>(["metadata", "matchLyrics", "matchCover", "edit", "rename", "lyrics", "exportLyrics", "exportCover", "replaygain", "delete"]);
 
+/** Toolbar order, grouped by what the operation does. Groups never split across lines. */
+const operationGroups: BatchOperation[][] = [
+  ["metadata", "matchLyrics", "matchCover"],
+  ["edit", "rename"],
+  ["lyrics", "exportLyrics", "exportCover"],
+  ["replaygain", "delete"],
+];
+
 const operationIcons: Record<BatchOperation, ReactNode> = {
   metadata: <TagsOutlined />,
   matchLyrics: <FileTextOutlined />,
@@ -116,7 +139,7 @@ const operationIcons: Record<BatchOperation, ReactNode> = {
   delete: <DeleteOutlined />,
 };
 
-export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSeparator, onChangeSettings }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; selectedPaths: string[]; settings: DesktopSettings; artistSeparator: string; onChangeSettings: (settings: DesktopSettings) => void }) {
+export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSeparator, onChangeSettings, onChooseSongs }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; selectedPaths: string[]; settings: DesktopSettings; artistSeparator: string; onChooseSongs: () => void; onChangeSettings: (settings: DesktopSettings) => void }) {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const [operation, setOperation] = useState<BatchOperation>("replaygain");
@@ -132,7 +155,6 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
   const [submitting, setSubmitting] = useState(false);
   const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
   const selectedTracks = useMemo(() => tracks.filter((track) => selectedSet.has(track.path)), [selectedSet, tracks]);
-  const operations = ["metadata", "matchLyrics", "matchCover", "edit", "rename", "lyrics", "exportLyrics", "exportCover", "replaygain", "delete"] as BatchOperation[];
   const replayGainIsActive = isActiveTask(activeReplayGainTask);
   const editIsActive = isActiveTask(activeEditTask);
   const lyricsIsActive = isActiveTask(activeLyricsTask);
@@ -489,29 +511,35 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
   }
 
   return (
-    <div className="workspace page-stack tasks-view">
-      <header className="batch-page-header">
-        <Title level={2}>{t("tasks.title")}</Title>
-        <Text strong>{t("selection.count", { count: selectedTracks.length })}</Text>
-      </header>
+    <div className="page-shell tasks-view">
+      <PageHeader
+        title={t("tasks.title")}
+        meta={t("selection.count", { count: selectedTracks.length })}
+        actions={<Button type={selectedTracks.length === 0 ? "primary" : "default"} onClick={onChooseSongs}>{t("selection.enter")}</Button>}
+      />
 
-      <div className="batch-action-bar" role="toolbar" aria-label={t("tasks.chooseOperation")}>
-        {operations.map((key) => {
-          const available = availableOperations.has(key);
-          const button = (
-            <Button
-              key={key}
-              type={operation === key ? "primary" : "text"}
-              icon={operationIcons[key]}
-              disabled={!available}
-              onClick={() => changeOperation(key)}
-            >
-              {t(`tasks.operations.${key}`)}
-            </Button>
-          );
-          return available ? button : <Tooltip key={key} title={t("tasks.unavailable")}>{button}</Tooltip>;
-        })}
-      </div>
+      <div className="page-body tasks-body">
+        <div className="batch-action-bar" role="toolbar" aria-label={t("tasks.chooseOperation")}>
+          {operationGroups.map((group) => (
+            <div className="batch-action-group" key={group[0]}>
+              {group.map((key) => {
+                const available = availableOperations.has(key);
+                const button = (
+                  <Button
+                    key={key}
+                    type={operation === key ? "primary" : "text"}
+                    icon={operationIcons[key]}
+                    disabled={!available}
+                    onClick={() => changeOperation(key)}
+                  >
+                    {t(`tasks.operations.${key}`)}
+                  </Button>
+                );
+                return available ? button : <Tooltip key={key} title={t("tasks.unavailable")}>{button}</Tooltip>;
+              })}
+            </div>
+          ))}
+        </div>
 
       {operation === "metadata" || operation === "matchLyrics" || operation === "matchCover" ? (
         <MetadataMatchPanel
@@ -585,12 +613,13 @@ export function TasksPage({ tracks, plugins, selectedPaths, settings, artistSepa
           onCancel={cancelReplayGain}
         />
       )}
-      <TaskHistory
-        tasks={taskHistory}
-        onRefresh={() => void refreshTaskHistory()}
-        onRetry={(task) => void retryTask(task)}
-        onDelete={(task) => void deleteTask(task)}
-      />
+        <TaskHistory
+          tasks={taskHistory}
+          onRefresh={() => void refreshTaskHistory()}
+          onRetry={(task) => void retryTask(task)}
+          onDelete={(task) => void deleteTask(task)}
+        />
+      </div>
     </div>
   );
 }
@@ -607,6 +636,7 @@ function TaskHistory({
   onDelete: (task: BatchTask) => void;
 }) {
   const { t } = useTranslation();
+  const { modal } = App.useApp();
   const columns: TableColumnsType<BatchTask> = [
     { title: t("tasks.historyType"), dataIndex: "taskType", width: 150 },
     {
@@ -643,20 +673,21 @@ function TaskHistory({
             <Button size="small" onClick={() => onRetry(task)}>{t("tasks.historyRetry")}</Button>
           ) : null}
           {!isActiveTask(task) ? (
-            <Popconfirm title={t("tasks.historyDeleteConfirm")} onConfirm={() => onDelete(task)}>
-              <Button size="small" danger>{t("common.delete")}</Button>
-            </Popconfirm>
+            <Button size="small" danger onClick={() => modal.confirm({
+              centered: true, title: t("tasks.historyDeleteConfirm"),
+              okText: t("common.delete"), cancelText: t("common.cancel"),
+              okButtonProps: { danger: true }, onOk: () => onDelete(task),
+            })}>{t("common.delete")}</Button>
           ) : null}
         </Space>
       ),
     },
   ];
   return (
-    <Card
-      className="content-card task-history-card"
+    <Panel
+      className="task-history"
       title={t("tasks.historyTitle")}
       extra={<Button size="small" onClick={onRefresh}>{t("tasks.historyRefresh")}</Button>}
-      styles={{ body: { padding: 0 } }}
     >
       <Table
         rowKey="taskId"
@@ -664,10 +695,10 @@ function TaskHistory({
         pagination={{ pageSize: 8, hideOnSinglePage: true }}
         columns={columns}
         dataSource={tasks}
-        locale={{ emptyText: t("tasks.historyEmpty") }}
+        locale={{ emptyText: <EmptyState description={t("tasks.historyEmpty")} /> }}
         scroll={{ x: 820 }}
       />
-    </Card>
+    </Panel>
   );
 }
 
@@ -685,6 +716,7 @@ function DeleteFilesPanel({
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
+  const { modal } = App.useApp();
   const columns: TableColumnsType<AudioTrack> = [
     {
       title: t("table.track"),
@@ -704,17 +736,17 @@ function DeleteFilesPanel({
   return (
     <section className="batch-panel">
       <Text type="danger">{t("tasks.deleteWarning")}</Text>
-      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 720 }} />
+      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 720 }} locale={{ emptyText: <NoSelectedSongs /> }} />
       <footer className="batch-panel-footer">
         {task && <BatchTaskProgress task={task} />}
         {isActiveTask(task) ? (
           <Button danger onClick={onCancel}>{t("common.cancel")}</Button>
         ) : (
-          <Popconfirm title={t("tasks.deleteConfirm")} onConfirm={onRun} okButtonProps={{ danger: true }}>
-            <Button danger type="primary" icon={<DeleteOutlined />} loading={submitting} disabled={tracks.length === 0}>
-              {t("tasks.startDelete")}
-            </Button>
-          </Popconfirm>
+          <Button danger type="primary" icon={<DeleteOutlined />} loading={submitting} disabled={tracks.length === 0} onClick={() => modal.confirm({
+            centered: true, title: t("tasks.deleteConfirm"), content: t("tasks.deleteWarning"),
+            okText: t("tasks.startDelete"), cancelText: t("common.cancel"),
+            okButtonProps: { danger: true }, onOk: onRun,
+          })}>{t("tasks.startDelete")}</Button>
         )}
       </footer>
     </section>
@@ -723,7 +755,7 @@ function DeleteFilesPanel({
 
 function MetadataMatchPanel({ tracks, plugins, matchMode, task, submitting, onRun, onCancel }: { tracks: AudioTrack[]; plugins: SourcePlugin[]; matchMode: BatchMatchMode; task?: BatchTask; submitting: boolean; onRun: (config: MetadataMatchConfig) => void; onCancel: () => void }) {
   const { t } = useTranslation();
-  const availableSources = useMemo(() => plugins.filter((plugin) => plugin.enabled && plugin.capabilities.includes("searchSongs")), [plugins]);
+  const availableSources = useMemo(() => enabledPluginSources(plugins, "metadata"), [plugins]);
   const [enabledSources, setEnabledSources] = useState<string[]>(availableSources.map((plugin) => plugin.id));
   const [targetModes, setTargetModes] = useState<Record<string, MetadataWriteMode>>(() => buildMatchTargetModes(matchMode));
   const [preferFileName, setPreferFileName] = useState(false);
@@ -799,6 +831,7 @@ function MetadataMatchPanel({ tracks, plugins, matchMode, task, submitting, onRu
         size="middle"
         pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
         scroll={{ x: 720 }}
+        locale={{ emptyText: <NoSelectedSongs /> }}
       />
       <footer className="batch-panel-footer">
         {task && <BatchTaskProgress task={task} />}
@@ -816,7 +849,7 @@ function MetadataMatchPanel({ tracks, plugins, matchMode, task, submitting, onRu
           </Button>
         )}
       </footer>
-      <Modal title={t("tasks.matchFields")} open={settingsOpen} onCancel={() => setSettingsOpen(false)} onOk={() => setSettingsOpen(false)} destroyOnHidden>
+      <Modal centered title={t("tasks.matchFields")} open={settingsOpen} onCancel={() => setSettingsOpen(false)} onOk={() => setSettingsOpen(false)} destroyOnHidden>
         <Table
           rowKey="key"
           size="small"
@@ -943,7 +976,7 @@ function EditTagsPanel({ tracks, task, submitting, onRun, onCancel }: { tracks: 
           <Tag color={hasOperation ? "processing" : "default"}>{t("tasks.changeCount", { count: enabledFields.length + Number(ratingModified) + Number(Boolean(coverPath) || removeCover) + Number(lyricsOffsetMs !== 0) })}</Tag>
         </Space>
       </div>
-      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 900 }} />
+      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 900 }} locale={{ emptyText: <NoSelectedSongs /> }} />
       <footer className="batch-panel-footer">
         {task && <BatchTaskProgress task={task} />}
         {isActiveTask(task) ? (
@@ -952,7 +985,7 @@ function EditTagsPanel({ tracks, task, submitting, onRun, onCancel }: { tracks: 
           <Button type="primary" icon={<EditOutlined />} loading={submitting} disabled={tracks.length === 0 || !hasOperation} onClick={run}>{t("tasks.startEditTags")}</Button>
         )}
       </footer>
-      <Modal title={t("tasks.editFields")} open={settingsOpen} width={760} onCancel={() => setSettingsOpen(false)} onOk={() => setSettingsOpen(false)} destroyOnHidden>
+      <Modal centered title={t("tasks.editFields")} open={settingsOpen} width={760} onCancel={() => setSettingsOpen(false)} onOk={() => setSettingsOpen(false)} destroyOnHidden>
         <Space orientation="vertical" size={12} className="full-width batch-edit-fields">
           <Text type="secondary">{t("tasks.editEmptyHint")}</Text>
           {batchEditFields.map(([field, label, inputType]) => (
@@ -973,7 +1006,10 @@ function EditTagsPanel({ tracks, task, submitting, onRun, onCancel }: { tracks: 
           </div>
           <div className="batch-edit-field">
             <Text>{t("tasks.lyricsOffset")}</Text>
-            <InputNumber className="full-width" value={lyricsOffsetMs} step={100} addonAfter="ms" onChange={(value) => setLyricsOffsetMs(Number(value ?? 0))} />
+            <Flex className="full-width" gap={8} align="center">
+              <InputNumber value={lyricsOffsetMs} step={100} onChange={(value) => setLyricsOffsetMs(Number(value ?? 0))} />
+              <Text type="secondary">ms</Text>
+            </Flex>
           </div>
           <div className="batch-edit-field">
             <Text>{t("details.cover")}</Text>
@@ -1114,7 +1150,7 @@ function RenameFilesPanel({ tracks, task, submitting, onRun, onCancel, character
           {previewError ? <Text type="danger">{previewError}</Text> : null}
         </Space>
       </div>
-      <Table className="batch-table" rowKey="originalPath" columns={columns} dataSource={previews} loading={previewLoading} size="middle" pagination={previews.length > 12 ? { pageSize: 12, showSizeChanger: false } : false} scroll={{ x: 760 }} />
+      <Table className="batch-table" rowKey="originalPath" columns={columns} dataSource={previews} loading={previewLoading} size="middle" pagination={previews.length > 12 ? { pageSize: 12, showSizeChanger: false } : false} scroll={{ x: 760 }} locale={{ emptyText: <NoPendingChanges /> }} />
       <footer className="batch-panel-footer">
         {task && <BatchTaskProgress task={task} />}
         {taskIsActive ? (
@@ -1123,7 +1159,7 @@ function RenameFilesPanel({ tracks, task, submitting, onRun, onCancel, character
           <Button type="primary" icon={<FormOutlined />} loading={submitting} disabled={!canRun} onClick={run}>{t("tasks.startRename")}</Button>
         )}
       </footer>
-      <Modal title={t("tasks.characterMappings")} open={settingsOpen} onCancel={() => setSettingsOpen(false)} onOk={() => setSettingsOpen(false)} destroyOnHidden>
+      <Modal centered title={t("tasks.characterMappings")} open={settingsOpen} onCancel={() => setSettingsOpen(false)} onOk={() => setSettingsOpen(false)} destroyOnHidden>
         <Space orientation="vertical" size={12} className="full-width">
           <Text type="secondary">{t("tasks.characterMappingsHint")}</Text>
           <div className="rename-mapping-list">
@@ -1200,7 +1236,7 @@ function LyricsFormatPanel({ tracks, task, submitting, onRun, onCancel }: { trac
           <Checkbox checked={removeEmptyLines} onChange={(event) => setRemoveEmptyLines(event.target.checked)}>{t("lyrics.removeEmpty")}</Checkbox>
         </Space>
       </div>
-      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 720 }} />
+      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 720 }} locale={{ emptyText: <NoSelectedSongs /> }} />
       <footer className="batch-panel-footer">
         {task && <BatchTaskProgress task={task} />}
         {isActiveTask(task) ? (
@@ -1292,7 +1328,7 @@ function ExportPanel({ exportType, tracks, task, submitting, onRun, onCancel }: 
           </Space>
         </Space>
       </div>
-      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 760 }} />
+      <Table className="batch-table" rowKey="path" columns={columns} dataSource={tracks} size="middle" pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 760 }} locale={{ emptyText: <NoSelectedSongs /> }} />
       <footer className="batch-panel-footer">
         {task && <BatchTaskProgress task={task} />}
         {isActiveTask(task) ? (
@@ -1360,6 +1396,7 @@ function ReplayGainTagsPanel({ tracks, task, submitting, onRun, onCancel }: { tr
         size="middle"
         pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
         scroll={{ x: 920 }}
+        locale={{ emptyText: <NoSelectedSongs /> }}
       />
       <footer className="batch-panel-footer">
         {task && <BatchTaskProgress task={task} />}
@@ -1377,7 +1414,7 @@ function BatchTaskProgress({ task }: { task: BatchTask }) {
   const { t } = useTranslation();
   return (
     <div className="batch-task-progress">
-      <Progress percent={task.total ? Math.round((task.current / task.total) * 100) : 0} showInfo={false} size="small" status={task.status === "failed" ? "exception" : task.status === "succeeded" ? "success" : "active"} />
+      <Progress percent={Math.round((task.progress ?? (task.total ? task.current / task.total : 0)) * 100)} showInfo={false} size="small" status={task.status === "failed" ? "exception" : task.status === "succeeded" ? "success" : "active"} />
       <Text type="secondary">
         {t("tasks.taskSummary", { current: task.current, total: task.total, success: task.successCount, skipped: task.skippedCount, failed: task.failureCount })}
       </Text>
