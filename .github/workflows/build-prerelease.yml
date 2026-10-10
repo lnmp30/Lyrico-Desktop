@@ -23,7 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # src-tauri/build.rs requires src-tauri/native/taglib-src to exist
+          # src-tauri/build.rs requires native/taglib/upstream and native/ffmpeg/upstream
           submodules: recursive
 
       - name: Setup Node.js 22
@@ -41,7 +41,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build Tauri bundle (NSIS)
         run: npm run tauri build
