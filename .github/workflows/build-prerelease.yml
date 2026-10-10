@@ -40,10 +40,25 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # FFmpeg 在 Windows 上经 MSYS2 用 GNU make 构建，需要 make/diffutils/pkgconf/nasm
+      - name: Setup MSYS2 (FFmpeg native build)
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          install: >-
+            make
+            diffutils
+            pkgconf
+            nasm
+
       - name: Install frontend dependencies
         run: npm ci
 
       - name: Build Tauri bundle (NSIS)
+        env:
+          # native/ffmpeg/CMakeLists.txt 在 ${MSYS2_ROOT}/usr/bin 下查找 bash 与 cmp
+          LYRICO_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: npm run tauri build
 
       - name: Upload installer to Actions Artifacts
