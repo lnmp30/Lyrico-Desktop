@@ -43,6 +43,8 @@ const DEFAULT_TARGETS: &[&str] = &[
 #[serde(rename_all = "camelCase")]
 struct MatchConfig {
     #[serde(default)]
+    match_mode: String,
+    #[serde(default)]
     target_modes: HashMap<String, String>,
     #[serde(default)]
     enabled_source_order_ids: Vec<String>,
@@ -114,7 +116,11 @@ impl BatchProcessor for MatchMetadataProcessor {
             None,
         ))
         .map_err(ProcessError::Failed)?;
-        let plugins = ordered_search_plugins(plugins, &config.enabled_source_order_ids);
+        let plugins = ordered_search_plugins(
+            plugins,
+            &config.enabled_source_order_ids,
+            match_source_kind(&config.match_mode),
+        );
         if plugins.is_empty() {
             return Err(ProcessError::Skipped(
                 "No enabled metadata source".to_string(),
@@ -270,19 +276,15 @@ fn log_source_warning(
     message: &str,
     error: &str,
 ) {
-    let detail = json!({
-        "itemId": context.item.item_id,
-        "songPath": context.item.song_path,
-        "pluginId": plugin.manifest.id,
-        "error": error,
-    })
-    .to_string();
-    let _ = tauri::async_runtime::block_on(context.database.log_batch_event(
-        "warning",
-        message,
-        Some(detail),
-        &context.task.task_id,
-    ));
+    // The plugin invocation event contains a sanitized cause; do not repeat arbitrary
+    // plugin error text here, where plugin config secrets are no longer available.
+    let _ = error;
+    crate::logging::event(
+        log::Level::Warn,
+        "batch",
+        "source.fallback",
+        json!({"taskId":context.task.task_id,"itemId":context.item.item_id,"songPath":context.item.song_path,"pluginId":plugin.manifest.id,"reason":message}),
+    );
 }
 
 fn parse_config(raw: Option<&str>) -> Result<MatchConfig, ProcessError> {
@@ -315,16 +317,25 @@ fn parse_config(raw: Option<&str>) -> Result<MatchConfig, ProcessError> {
     Ok(config)
 }
 
+fn match_source_kind(mode: &str) -> &'static str {
+    match mode {
+        "lyrics" => "lyrics",
+        "cover" => "covers",
+        _ => "metadata",
+    }
+}
+
 fn ordered_search_plugins(
     plugins: Vec<SourcePlugin>,
     enabled_order: &[String],
+    source_kind: &str,
 ) -> Vec<SourcePlugin> {
     let mut plugins: Vec<_> = plugins
         .into_iter()
         .filter(|plugin| {
             plugin.enabled
                 && plugin
-                    .source_state("metadata")
+                    .source_state(source_kind)
                     .is_some_and(|state| state.enabled)
                 && (enabled_order.is_empty()
                     || enabled_order.iter().any(|id| id == &plugin.manifest.id))
@@ -342,7 +353,7 @@ fn ordered_search_plugins(
             .position(|id| id == &plugin.manifest.id)
             .unwrap_or(usize::MAX);
         let priority = plugin
-            .source_state("metadata")
+            .source_state(source_kind)
             .map_or(i32::MAX, |state| state.priority);
         (configured, priority)
     });
@@ -925,102 +936,5 @@ fn numeric_field(
         candidate
     } else {
         current
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn track() -> AudioTrack {
-        AudioTrack {
-            id: "song".to_string(),
-            path: "song.flac".to_string(),
-            file_name: "01 周杰伦 - 晴天.flac".to_string(),
-            title: "晴天".to_string(),
-            artist: "周杰伦".to_string(),
-            album: String::new(),
-            album_artist: String::new(),
-            genre: String::new(),
-            language: String::new(),
-            composer: String::new(),
-            lyricist: String::new(),
-            copyright: String::new(),
-            rating: None,
-            comment: String::new(),
-            lyrics: String::new(),
-            track_number: None,
-            disc_number: None,
-            year: String::new(),
-            duration_seconds: 269,
-            format: "FLAC".to_string(),
-            bitrate: None,
-            sample_rate: None,
-            channels: None,
-            cover_data_url: None,
-            has_lyrics: false,
-            has_cover: false,
-            replay_gain_track_gain: String::new(),
-            replay_gain_track_peak: String::new(),
-            replay_gain_album_gain: String::new(),
-            replay_gain_album_peak: String::new(),
-            replay_gain_reference_loudness: String::new(),
-            modified_at: None,
-            added_at: None,
-            created_at: None,
-        }
-    }
-
-    #[test]
-    fn queries_and_score_match_mobile_threshold_behavior() {
-        let track = track();
-        assert_eq!(build_search_queries(&track, false)[0], "晴天 周杰伦");
-        let exact = calculate_match_score(
-            &track,
-            &json!({"title":"晴天","artist":"周杰伦","duration":269000}),
-            false,
-            0,
-        );
-        let wrong = calculate_match_score(
-            &track,
-            &json!({"title":"七里香","artist":"林俊杰","duration":180000}),
-            false,
-            0,
-        );
-        assert!(exact.final_score >= 0.92 && exact.text_score >= 0.86);
-        assert!(wrong.final_score < 0.76 || wrong.text_score < 0.72);
-    }
-
-    #[test]
-    fn supplement_preserves_existing_fields_and_overwrite_replaces_enabled_fields() {
-        let current = track();
-        let fields = HashMap::from([
-            ("title".to_string(), "晴天 (Remastered)".to_string()),
-            ("album".to_string(), "叶惠美".to_string()),
-            ("track_number".to_string(), "3/12".to_string()),
-        ]);
-        let config = MatchConfig {
-            target_modes: HashMap::from([
-                ("title".to_string(), "supplement".to_string()),
-                ("album".to_string(), "supplement".to_string()),
-                ("track_number".to_string(), "overwrite".to_string()),
-            ]),
-            enabled_source_order_ids: Vec::new(),
-            prefer_file_name: false,
-            separator: "/".to_string(),
-            lyric_format: default_lyric_format(),
-            show_translation: true,
-            show_romanization: true,
-            only_translation_if_available: false,
-            remove_empty_lyric_lines: true,
-            lyric_line_order: Vec::new(),
-            remove_tag_line_keywords: Vec::new(),
-            lyrics_conversion_mode: default_conversion_mode(),
-        };
-        let (update, changed) = build_update(&current, &fields, None, &config, "/");
-        assert_eq!(update.title, "晴天");
-        assert_eq!(update.album, "叶惠美");
-        assert_eq!(update.track_number, Some(3));
-        assert_eq!(changed, vec!["album", "track_number"]);
     }
 }

@@ -1,5 +1,5 @@
-import { ApiOutlined, AudioOutlined, EditOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, InfoCircleOutlined, ImportOutlined, ExportOutlined, ScissorOutlined, SoundOutlined, SyncOutlined } from "@ant-design/icons";
-import { App as AntApp, Avatar, Button, Collapse, Flex, Input, InputNumber, Modal, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, type TableColumnsType } from "antd";
+import { DeleteOutlined, PlusOutlined, ReloadOutlined, ApiOutlined, AudioOutlined, EditOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, InfoCircleOutlined, ImportOutlined, ExportOutlined, ScissorOutlined, SoundOutlined } from "@ant-design/icons";
+import { App as AntApp, Avatar, Button, Flex, Input, InputNumber, Modal, Select, Space, Switch, Tabs, Typography } from "antd";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -9,12 +9,11 @@ import type { LanguagePreference } from "../i18n";
 import { SortableList } from "../components/SortableList";
 import appIcon from "../assets/app-icon.png";
 import { ArtistSplitSettings } from "../components/ArtistSplitSettings";
-import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
-import { exportConfig, importConfig, loadAppLogs, pickPaths, pickSavePath, writeTextFile, type AppLogEntry, type ThemeMode } from "../backend/audioApi";
+import { loadLibraryCustomTagKeys, exportConfig, importConfig, openLogsDirectory, pickPaths, pickSavePath, type ThemeMode } from "../backend/audioApi";
 import { normalizeCleanupKeywords, normalizeLyricLineOrder } from "../domain/lyricsSettings";
-import { normalizeEditFieldOrder, EDIT_FIELD_LABEL_KEYS, REPLAY_GAIN_BLOCK_KEY, toEditFieldBlocks, withEditFieldBlockMembers } from "../domain/editFieldSettings";
-import { parseTimeValue } from "../utils/format";
+import { customTagKeyOf, normalizeCustomTagKey, withAddedCustomTag, withRemovedCustomTag, normalizeEditFieldOrder, EDIT_FIELD_LABEL_KEYS, REPLAY_GAIN_BLOCK_KEY, toEditFieldBlocks, withEditFieldBlockMembers } from "../domain/editFieldSettings";
+import { CONTRIBUTORS } from "../data/contributors";
 
 const { Text } = Typography;
 
@@ -230,9 +229,7 @@ export function SettingsPage({
               label: t("settings.logs"),
               icon: <FileTextOutlined />,
               children: (
-                <SettingsSection title={t("settings.logs")}>
-                  <AppLogsSection />
-                </SettingsSection>
+                <AppLogsSection />
               ),
             },
             {
@@ -259,9 +256,36 @@ function SettingsSection({ title, children }: { title: string; children: ReactNo
  */
 function EditFieldOrderEditor({ settings, onChange }: { settings: DesktopSettings; onChange: (settings: DesktopSettings) => void }) {
   const { t } = useTranslation();
+  const { modal } = AntApp.useApp();
+  const [adding, setAdding] = useState(false);
+  const [input, setInput] = useState("");
+  const [inputError, setInputError] = useState<string>();
+  const [available, setAvailable] = useState<string[]>([]);
+  const [loadingKeys, setLoadingKeys] = useState(false);
+  const [keysError, setKeysError] = useState<string>();
   const [openBlock, setOpenBlock] = useState<string>();
-  const blocks = useMemo(() => toEditFieldBlocks(normalizeEditFieldOrder(settings.editFieldOrder)), [settings.editFieldOrder]);
-  const labelOf = (key: string) => t(EDIT_FIELD_LABEL_KEYS.find(([field]) => field === key)?.[1] ?? key);
+  useEffect(() => {
+    if (!adding) return;
+    let active = true;
+    setLoadingKeys(true);
+    setKeysError(undefined);
+    loadLibraryCustomTagKeys().then(result => {
+      if (!active) return;
+      setAvailable(result.keys);
+      if (result.unreadable) setKeysError(t("settings.customKeysUnreadable", { count: result.unreadable }));
+    }).catch(error => { if (active) setKeysError(String(error)); })
+      .finally(() => { if (active) setLoadingKeys(false); });
+    return () => { active = false; };
+  }, [adding, t]);
+  function addKey(key: string) {
+    const normalized = normalizeCustomTagKey(key);
+    if (!normalized) { setInputError(t(key.trim() ? "settings.customKeyInvalid" : "settings.customKeyEmpty")); return; }
+    if (settings.editCustomTags.includes(normalized)) { setInputError(t("settings.customKeyDuplicate")); return; }
+    onChange(withAddedCustomTag(settings, normalized));
+    setAdding(false);
+  }
+  const blocks = useMemo(() => toEditFieldBlocks(normalizeEditFieldOrder(settings.editFieldOrder, settings.editCustomTags)), [settings.editFieldOrder, settings.editCustomTags]);
+  const labelOf = (key: string) => customTagKeyOf(key) ?? t(EDIT_FIELD_LABEL_KEYS.find(([field]) => field === key)?.[1] ?? key);
   const shown = (key: string) => settings.editFieldVisibility?.[key] !== false;
   const setShown = (key: string, checked: boolean) =>
     onChange({ ...settings, editFieldVisibility: { ...settings.editFieldVisibility, [key]: checked } });
@@ -272,6 +296,18 @@ function EditFieldOrderEditor({ settings, onChange }: { settings: DesktopSetting
 
   return (
     <>
+      <Flex gap={8} justify="end" style={{ marginBottom: 12 }}>
+        <Button icon={<ReloadOutlined />} onClick={() => modal.confirm({ centered: true, title: t("settings.resetFields"), content: t("settings.resetFieldsConfirm"), onOk: () => onChange({ ...settings, editCustomTags: [], editFieldOrder: normalizeEditFieldOrder([]), editFieldVisibility: {} }) })}>{t("settings.resetFields")}</Button>
+        <Button icon={<PlusOutlined />} onClick={() => { setInput(""); setInputError(undefined); setAvailable([]); setAdding(true); }}>{t("settings.addCustomField")}</Button>
+      </Flex>
+      <Modal centered open={adding} title={t("settings.addCustomField")} onCancel={() => setAdding(false)} onOk={() => addKey(input)}>
+        <Space orientation="vertical" className="full-width">
+          <Select className="full-width" loading={loadingKeys} placeholder={t("settings.customKeysFromLibrary")} value={undefined} options={available.filter(key => !settings.editCustomTags.includes(key)).map(key => ({ value: key, label: key }))} onChange={addKey} />
+          {keysError ? <Text type="warning">{keysError}</Text> : null}
+          <Input aria-label={t("details.customTagKey")} placeholder={t("details.customTagKey")} value={input} status={inputError ? "error" : undefined} onChange={event => { setInput(event.target.value); setInputError(undefined); }} onPressEnter={() => addKey(input)} />
+          <Text type={inputError ? "danger" : "secondary"}>{inputError ?? t("settings.customKeyHint")}</Text>
+        </Space>
+      </Modal>
       <SortableList
         items={blocks.map((block) => block.key)}
         label={t("settings.editFields")}
@@ -284,13 +320,16 @@ function EditFieldOrderEditor({ settings, onChange }: { settings: DesktopSetting
           const block = blocks.find((candidate) => candidate.key === key);
           if (!block?.composite) {
             return <>
-              <Text>{labelOf(key)}</Text>
+              <Text ellipsis={{ tooltip: labelOf(key) }} style={{ flex: 1, minWidth: 0 }}>{labelOf(key)}</Text>
+              <Space size={4}>
+              {customTagKeyOf(key) ? <Button type="text" danger size="small" icon={<DeleteOutlined />} aria-label={t("settings.removeCustomField", { name: labelOf(key) })} onClick={() => modal.confirm({ centered: true, title: t("settings.removeCustomField", { name: labelOf(key) }), content: t("settings.removeCustomFieldConfirm"), okButtonProps: { danger: true }, onOk: () => onChange(withRemovedCustomTag(settings, customTagKeyOf(key)!)) })} /> : null}
               <Switch
                 size="small"
                 aria-label={t("settings.showField", { name: labelOf(key) })}
                 checked={shown(key)}
                 onChange={(checked) => setShown(key, checked)}
               />
+              </Space>
             </>;
           }
           const allShown = block.fields.every(shown);
@@ -324,7 +363,7 @@ function EditFieldOrderEditor({ settings, onChange }: { settings: DesktopSetting
             labelFor={labelOf}
             onChange={(members) => onChange({
               ...settings,
-              editFieldOrder: withEditFieldBlockMembers(settings.editFieldOrder, composite.key, members),
+              editFieldOrder: withEditFieldBlockMembers(settings.editFieldOrder, composite.key, members, settings.editCustomTags),
             })}
             renderItem={(field) => <>
               <Text>{labelOf(field)}</Text>
@@ -441,123 +480,21 @@ function BackupImportButton({ onImported }: { onImported: () => void }) {
   return <Button icon={<ImportOutlined />} loading={busy} onClick={() => void handleImport()}>{t("settings.importConfig")}</Button>;
 }
 
-const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
-
-
-
 function AppLogsSection() {
   const { t } = useTranslation();
-  const [level, setLevel] = useState<string>();
-  const [logType, setLogType] = useState<string>();
-  const [refreshToken, setRefreshToken] = useState(0);
-  const [logs, setLogs] = useState<AppLogEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    let disposed = false;
-    setLoading(true);
-    loadAppLogs(level, 500)
-      .then((entries) => {
-        if (!disposed) setLogs(entries);
-      })
-      .catch(() => {
-        if (!disposed) setLogs([]);
-      })
-      .finally(() => {
-        if (!disposed) setLoading(false);
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [level, refreshToken]);
-
-  const visibleLogs = logType ? logs.filter((entry) => entry.type === logType) : logs;
-  const logTypes = [...new Set(logs.map((entry) => entry.type).filter(Boolean))].sort();
-
-  async function exportLogs() {
-    const destination = await pickSavePath({
-      title: t("settings.logsExport"),
-      defaultPath: "lyrico-logs.txt",
-      filters: [{ name: "Text", extensions: ["txt"] }],
-    });
-    if (!destination) return;
-    await writeTextFile(
-      destination,
-      visibleLogs.map((entry) => [
-        entry.createdAt,
-        entry.level.toUpperCase(),
-        entry.type,
-        entry.tag,
-        entry.message,
-        entry.detail ?? "",
-      ].join("\t")).join("\n"),
-    );
+  const { message } = AntApp.useApp();
+  const [opening, setOpening] = useState(false);
+  async function openDirectory() {
+    setOpening(true);
+    try { await openLogsDirectory(); }
+    catch (error) { void message.error(String(error)); }
+    finally { setOpening(false); }
   }
-
-  const columns: TableColumnsType<AppLogEntry> = [
-    {
-      title: t("settings.logsTime"),
-      dataIndex: "createdAt",
-      width: 170,
-      sorter: (left, right) => parseTimeValue(left.createdAt) - parseTimeValue(right.createdAt),
-    },
-    {
-      title: t("settings.logsLevel"),
-      dataIndex: "level",
-      width: 96,
-      render: (value: string) => (
-        <Tag color={value === "error" ? "red" : value === "warn" ? "orange" : value === "info" ? "blue" : "default"}>
-          {value.toUpperCase()}
-        </Tag>
-      ),
-    },
-    { title: t("settings.logsMessage"), dataIndex: "message", ellipsis: true },
-    { title: t("settings.logsTag"), dataIndex: "tag", width: 130, ellipsis: true },
-  ];
-
-  return (
-    <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
-      <Space wrap>
-        <Select
-          allowClear
-          placeholder={t("settings.logsAll")}
-          value={level}
-          onChange={(value) => setLevel(value)}
-          style={{ width: 160 }}
-          options={LOG_LEVELS.map((value) => ({ value, label: value }))}
-        />
-        <Select
-          allowClear
-          placeholder={t("settings.logsAllTypes")}
-          value={logType}
-          onChange={(value) => setLogType(value)}
-          style={{ width: 160 }}
-          options={logTypes.map((value) => ({ value, label: value }))}
-        />
-        <Button icon={<SyncOutlined />} loading={loading} onClick={() => setRefreshToken((token) => token + 1)}>
-          {t("settings.logsRefresh")}
-        </Button>
-        <Button onClick={() => void exportLogs()} disabled={visibleLogs.length === 0}>{t("settings.logsExport")}</Button>
-        <Text type="secondary">{t("settings.logsCount", { count: visibleLogs.length })}</Text>
-      </Space>
-      <Table
-        rowKey="id"
-        size="small"
-        loading={loading}
-        columns={columns}
-        dataSource={visibleLogs}
-        pagination={{ pageSize: 10, showSizeChanger: false }}
-        expandable={{
-          expandedRowRender: (record) => (
-            <Text type="secondary" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-              {record.detail ?? record.relatedId ?? "—"}
-            </Text>
-          ),
-        }}
-        locale={{ emptyText: <EmptyState description={t("settings.logsEmpty")} /> }}
-      />
-    </Space>
-  );
+  return <SettingsSection title={t("settings.logs")}>
+    <SettingRow title={t("settings.logsDirectory")} description={t("settings.logsFileHint")}>
+      <Button icon={<FolderOpenOutlined />} loading={opening} onClick={() => void openDirectory()}>{t("settings.logsOpenDirectory")}</Button>
+    </SettingRow>
+  </SettingsSection>;
 }
 
 const OPEN_SOURCE_DEPENDENCIES = [
@@ -591,97 +528,25 @@ function AboutSection() {
       <Typography.Title level={2}>Lyrico</Typography.Title>
       <Text type="secondary">{t("settings.version")} {version || "—"}</Text>
       <Typography.Paragraph>{t("settings.aboutDescription")}</Typography.Paragraph>
-      <Button type="link" onClick={() => void openUrl("https://github.com/Replica0110/Lyrico-Desktop")}>{t("settings.projectHomepage")}</Button>
-      <Collapse
-        className="about-collapse"
-        items={[
-          {
-            key: "licenses",
-            label: t("settings.openSourceLicenses"),
-            children: (
-              <ul className="about-license-list">
-                {OPEN_SOURCE_DEPENDENCIES.map((dependency) => (
-                  <li key={dependency.name}>
-                    <Text>{dependency.name}</Text>
-                    <Text type="secondary">{dependency.license}</Text>
-                  </li>
-                ))}
-              </ul>
-            ),
-          },
-          {
-            key: "contributors",
-            label: t("settings.contributors"),
-            children: <ContributorsSection />,
-          },
-        ]}
-      />
+      <div className="about-links">
+        <Button type="link" onClick={() => void openUrl("https://github.com/Replica0110/Lyrico-Desktop")}>{t("settings.projectHomepage")}</Button>
+        <Button type="link" onClick={() => void openUrl("https://github.com/Replica0110/Lyrico-Desktop/issues")}>{t("settings.reportIssue")}</Button>
+      </div>
+      <section className="about-section">
+        <Typography.Title level={3}>{t("settings.contributors")}</Typography.Title>
+        <ContributorsSection />
+      </section>
+      <section className="about-section">
+        <Typography.Title level={3}>{t("settings.openSourceLicenses")}</Typography.Title>
+        <ul className="about-license-list">{OPEN_SOURCE_DEPENDENCIES.map(dependency => <li key={dependency.name}><Text>{dependency.name}</Text><Text type="secondary">{dependency.license}</Text></li>)}</ul>
+      </section>
     </section>
   );
 }
 
-type GitHubContributor = {
-  id: number;
-  login: string;
-  avatar_url: string;
-  html_url: string;
-  contributions: number;
-  type: string;
-};
-
 function ContributorsSection() {
-  const { t } = useTranslation();
-  const [contributors, setContributors] = useState<GitHubContributor[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let disposed = false;
-    setLoading(true);
-    setFailed(false);
-    fetch("https://api.github.com/repos/Replica0110/Lyrico-Desktop/contributors?per_page=100")
-      .then((response) => {
-        if (!response.ok) throw new Error(String(response.status));
-        return response.json() as Promise<GitHubContributor[]>;
-      })
-      .then((entries) => {
-        if (disposed) return;
-        setContributors(
-          entries
-            .filter((entry) => entry.type !== "Bot")
-            .sort((left, right) => right.contributions - left.contributions),
-        );
-      })
-      .catch(() => {
-        if (!disposed) setFailed(true);
-      })
-      .finally(() => {
-        if (!disposed) setLoading(false);
-      });
-    return () => {
-      disposed = true;
-    };
-  }, []);
-
-  if (loading) return <Spin />;
-  if (failed) return <Text type="danger">{t("settings.contributorsFailed")}</Text>;
-  if (contributors.length === 0) return <Text type="secondary">{t("settings.contributorsEmpty")}</Text>;
-  return (
-    <div className="contributor-list">
-      {contributors.map((contributor) => (
-        <button
-          key={contributor.id}
-          type="button"
-          className="contributor-row"
-          onClick={() => void openUrl(contributor.html_url)}
-        >
-          <Avatar src={contributor.avatar_url} size={36} className="contributor-avatar" />
-          <span className="contributor-copy">
-            <Text strong>{contributor.login}</Text>
-            <Text type="secondary">{t("settings.contributionCount", { total: contributor.contributions })}</Text>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
+  return <div className="contributor-list">{CONTRIBUTORS.map(contributor => <button key={contributor.name} type="button" className="contributor-row" onClick={() => void openUrl(contributor.url)}>
+    <Avatar src={contributor.avatar} size={36}>{contributor.name[0]}</Avatar>
+    <Text>{contributor.name}</Text>
+  </button>)}</div>;
 }

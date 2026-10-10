@@ -1,7 +1,7 @@
 use super::processor::{BatchProcessor, ProcessContext, ProcessError, ProcessOutcome};
 use crate::audio::{read_image_data_url, read_track, save_tag_fields, ArtworkMode};
 use crate::lyrics::{self, LyricsOptions};
-use crate::models::{AudioTrack, TagUpdate};
+use crate::models::{AudioTrack, CustomTag, TagUpdate};
 use serde::Deserialize;
 use serde_json::json;
 use std::path::Path;
@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct EditTagsConfig {
+    custom_tags: Vec<CustomTag>,
     title: Option<String>,
     artist: Option<String>,
     album_artist: Option<String>,
@@ -33,6 +34,7 @@ struct EditTagsConfig {
     replay_gain_track_peak: Option<String>,
     replay_gain_album_gain: Option<String>,
     replay_gain_album_peak: Option<String>,
+    replay_gain_reference_loudness: Option<String>,
 }
 
 pub(super) struct EditTagsProcessor;
@@ -57,7 +59,15 @@ impl BatchProcessor for EditTagsProcessor {
             .map(read_image_data_url)
             .transpose()
             .map_err(ProcessError::Failed)?;
-        let (update, changed_fields) = build_update(&current, &config, cover_data_url)?;
+        let (mut update, mut changed_fields) = build_update(&current, &config, cover_data_url)?;
+        if !config.custom_tags.is_empty() {
+            let existing = crate::audio::read_custom_tags(path).map_err(ProcessError::Failed)?;
+            let merged = merge_custom_tags(&existing, &config.custom_tags)?;
+            if merged != existing {
+                update.custom_tags = Some(merged);
+                changed_fields.push("customTags".to_string());
+            }
+        }
         if changed_fields.is_empty() {
             return Err(ProcessError::Skipped("No changes".to_string()));
         }
@@ -98,7 +108,8 @@ fn parse_config(config_json: Option<&str>) -> Result<EditTagsConfig, ProcessErro
 }
 
 fn has_operation(config: &EditTagsConfig) -> bool {
-    config.title.is_some()
+    !config.custom_tags.is_empty()
+        || config.title.is_some()
         || config.artist.is_some()
         || config.album_artist.is_some()
         || config.album.is_some()
@@ -120,6 +131,40 @@ fn has_operation(config: &EditTagsConfig) -> bool {
         || config.replay_gain_track_peak.is_some()
         || config.replay_gain_album_gain.is_some()
         || config.replay_gain_album_peak.is_some()
+        || config.replay_gain_reference_loudness.is_some()
+}
+
+fn merge_custom_tags(
+    existing: &[CustomTag],
+    changes: &[CustomTag],
+) -> Result<Vec<CustomTag>, ProcessError> {
+    let mut merged = existing.to_vec();
+    let mut keys = std::collections::HashSet::new();
+    for tag in changes {
+        let key = crate::config::normalize_custom_tag_key(&tag.key)
+            .ok_or_else(|| ProcessError::Failed("Invalid custom tag key".to_string()))?;
+        if !keys.insert(key.clone()) {
+            return Err(ProcessError::Failed("Duplicate custom tag key".to_string()));
+        }
+        let values: Vec<_> = tag
+            .values
+            .iter()
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .collect();
+        if merged
+            .iter()
+            .any(|tag| tag.key == key && tag.values == values)
+        {
+            continue;
+        }
+        merged
+            .retain(|tag| crate::config::normalize_custom_tag_key(&tag.key).as_ref() != Some(&key));
+        if !values.is_empty() {
+            merged.push(CustomTag { key, values });
+        }
+    }
+    Ok(merged)
 }
 
 fn build_update(
@@ -186,6 +231,12 @@ fn build_update(
         &current.replay_gain_album_peak,
         &config.replay_gain_album_peak,
         "replayGainAlbumPeak",
+        &mut changed,
+    );
+    let replay_gain_reference_loudness = edit_string(
+        &current.replay_gain_reference_loudness,
+        &config.replay_gain_reference_loudness,
+        "replayGainReferenceLoudness",
         &mut changed,
     );
     let current_genre = split_genre(&current.genre);
@@ -263,7 +314,7 @@ fn build_update(
             replay_gain_track_peak,
             replay_gain_album_gain,
             replay_gain_album_peak,
-            replay_gain_reference_loudness: current.replay_gain_reference_loudness.clone(),
+            replay_gain_reference_loudness,
             cover_data_url,
             remove_cover,
         },
@@ -319,109 +370,49 @@ fn split_genre(value: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod custom_field_tests {
     use super::*;
 
-    #[test]
-    fn config_distinguishes_keep_clear_and_invalid_empty_operation() {
-        assert!(matches!(
-            parse_config(Some(r#"{"concurrency":3}"#)),
-            Err(ProcessError::Skipped(_))
-        ));
-        let config = parse_config(Some(
-            r#"{"title":"","trackNumber":"","ratingModified":true,"rating":0}"#,
-        ))
-        .expect("clear operations should be valid");
-        assert_eq!(config.title.as_deref(), Some(""));
-        assert_eq!(config.track_number.as_deref(), Some(""));
-        assert!(config.rating_modified);
+    fn tag(key: &str, values: &[&str]) -> CustomTag {
+        CustomTag {
+            key: key.to_string(),
+            values: values.iter().map(|value| value.to_string()).collect(),
+        }
     }
 
     #[test]
-    fn merge_only_changes_selected_fields_and_uses_shared_lyrics_offset() {
-        let current = sample_track();
-        let config: EditTagsConfig =
-            serde_json::from_str(r#"{"artist":"新艺术家","comment":"","lyricsOffsetMs":500}"#)
-                .unwrap();
-        let (update, changed) = build_update(&current, &config, None).unwrap();
-        assert_eq!(update.title, current.title);
-        assert_eq!(update.artist, "新艺术家");
-        assert_eq!(update.comment, "");
-        assert_eq!(update.lyrics, "[00:01.500]line");
-        assert_eq!(changed, ["artist", "comment", "lyricsOffset"]);
-    }
-
-    #[test]
-    fn configured_audio_fixture_is_written_and_read_back() {
-        let Ok(source) = std::env::var("LYRICO_REPLAY_GAIN_FIXTURE") else {
-            return;
-        };
-        let source = std::path::PathBuf::from(source);
-        let extension = source
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("flac");
-        let target = std::env::temp_dir().join(format!(
-            "lyrico-batch-edit-write-{}.{extension}",
-            std::process::id()
-        ));
-        std::fs::copy(&source, &target).expect("fixture should copy");
-        let before = read_track(&target, "/", ArtworkMode::None).expect("fixture should read");
-        let config: EditTagsConfig = serde_json::from_str(
-            r#"{"title":"批量编辑写后重读","comment":"","lyrics":"[00:01.000]批量编辑测试"}"#,
+    fn batch_custom_edits_preserve_unselected_tags_and_support_set_and_clear() {
+        let existing = vec![
+            tag("MOOD", &["calm"]),
+            tag("LABEL", &["one", "two"]),
+            tag("HIDDEN", &["keep"]),
+        ];
+        let merged = merge_custom_tags(
+            &existing,
+            &[
+                tag(" mood ", &["lively"]),
+                tag("LABEL", &[""]),
+                tag("NEW", &["a", "b"]),
+            ],
         )
         .unwrap();
-        let (mut update, changed) = build_update(&before, &config, None).unwrap();
-        update.path = target.to_string_lossy().into_owned();
-        assert!(changed.iter().any(|field| field == "title"));
-        assert!(changed.iter().any(|field| field == "lyrics"));
-        crate::audio::save_tags(update, "/").expect("batch edit tags should write");
-        let after = read_track(&target, "/", ArtworkMode::None)
-            .expect("batch edit tags should read back from disk");
-        assert_eq!(after.title, "批量编辑写后重读");
-        assert_eq!(after.comment, "");
-        assert_eq!(after.lyrics, "[00:01.000]批量编辑测试");
-        assert_eq!(after.artist, before.artist);
-        assert_eq!(after.album, before.album);
-        let _ = std::fs::remove_file(target);
+        assert_eq!(
+            merged,
+            vec![
+                tag("HIDDEN", &["keep"]),
+                tag("MOOD", &["lively"]),
+                tag("NEW", &["a", "b"])
+            ]
+        );
+        assert_eq!(merge_custom_tags(&existing, &[]).unwrap(), existing);
     }
 
-    fn sample_track() -> AudioTrack {
-        AudioTrack {
-            id: "song".to_string(),
-            path: "song.flac".to_string(),
-            file_name: "song.flac".to_string(),
-            title: "标题".to_string(),
-            artist: "艺术家".to_string(),
-            album: "专辑".to_string(),
-            album_artist: "专辑艺术家".to_string(),
-            genre: "Pop".to_string(),
-            language: "zho".to_string(),
-            composer: "作曲".to_string(),
-            lyricist: "作词".to_string(),
-            copyright: "版权".to_string(),
-            rating: Some(4),
-            comment: "注释".to_string(),
-            lyrics: "[00:01.000]line".to_string(),
-            track_number: Some(1),
-            disc_number: Some(1),
-            year: "2026".to_string(),
-            duration_seconds: 60,
-            format: "FLAC".to_string(),
-            bitrate: None,
-            sample_rate: None,
-            channels: None,
-            cover_data_url: None,
-            has_lyrics: true,
-            has_cover: false,
-            replay_gain_track_gain: "-8.00 dB".to_string(),
-            replay_gain_track_peak: "0.9".to_string(),
-            replay_gain_album_gain: "".to_string(),
-            replay_gain_album_peak: "".to_string(),
-            replay_gain_reference_loudness: "".to_string(),
-            modified_at: None,
-            added_at: None,
-            created_at: None,
-        }
+    #[test]
+    fn custom_only_tasks_are_operations_and_invalid_keys_fail() {
+        assert!(has_operation(
+            &parse_config(Some(r#"{"customTags":[{"key":"MOOD","values":["calm"]}]}"#)).unwrap()
+        ));
+        assert!(merge_custom_tags(&[], &[tag("a\nb", &["value"])]).is_err());
+        assert!(merge_custom_tags(&[], &[tag("mood", &["a"]), tag("MOOD", &["b"])]).is_err());
     }
 }

@@ -32,6 +32,10 @@ export async function loadCustomTags(path: string) {
   return invoke<CustomTag[]>("load_custom_tags", { path });
 }
 
+export async function loadLibraryCustomTagKeys() {
+  return invoke<{ keys: string[]; unreadable: number }>("load_library_custom_tag_keys");
+}
+
 export async function readImageFile(path: string) {
   return invoke<string>("read_image_file", { path });
 }
@@ -119,19 +123,8 @@ export async function searchLyricsLines(query: string, limit = 50) {
   return invoke<LyricLineMatch[]>("search_lyrics_lines", { query, limit });
 }
 
-export type AppLogEntry = {
-  id: number;
-  createdAt: string;
-  level: string;
-  type: string;
-  tag: string;
-  message: string;
-  detail?: string | null;
-  relatedId?: string | null;
-};
-
-export async function loadAppLogs(level?: string, limit = 200) {
-  return invoke<AppLogEntry[]>("load_app_logs", { level: level ?? null, limit });
+export async function openLogsDirectory() {
+  return invoke<void>("open_logs_directory");
 }
 
 export async function upsertLibraryFolder(folder: LibraryFolder) {

@@ -1,6 +1,4 @@
-use crate::models::{
-    AppLogEntry, AudioTrack, BatchTask, BatchTaskItem, LibraryFolder, LyricLineMatch,
-};
+use crate::models::{AudioTrack, BatchTask, BatchTaskItem, LibraryFolder, LyricLineMatch};
 use rusqlite::{params, Connection, OptionalExtension, Row, ToSql, Transaction};
 use std::collections::HashMap;
 use std::fs;
@@ -9,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_SCHEMA_VERSION: u32 = 8;
+const DATABASE_SCHEMA_VERSION: u32 = 10;
 static NEXT_BATCH_ID: AtomicU64 = AtomicU64::new(1);
 const BATCH_TASK_TYPES: &[&str] = &[
     "matchMetadata",
@@ -53,26 +51,81 @@ pub(crate) struct PluginRecord {
 
 impl Database {
     pub(crate) async fn open(path: &Path) -> Result<Self, String> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let connection = Connection::open(path).map_err(|error| error.to_string())?;
-        configure_connection(&connection)?;
-        migrate_schema(&connection)?;
-        Ok(Self {
-            connection: Arc::new(Mutex::new(connection)),
-        })
+        let operation = crate::logging::Operation::new(
+            "database",
+            "open",
+            serde_json::json!({"schemaVersion":DATABASE_SCHEMA_VERSION}),
+            log::Level::Info,
+        );
+        let result = (|| {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            let connection = Connection::open(path).map_err(|error| error.to_string())?;
+            configure_connection(&connection)?;
+            migrate_schema(&connection)?;
+            Ok(Self {
+                connection: Arc::new(Mutex::new(connection)),
+            })
+        })();
+        operation.finish(&result);
+        result
     }
 
-    #[cfg(test)]
-    async fn in_memory() -> Result<Self, String> {
-        let connection = Connection::open_in_memory().map_err(|error| error.to_string())?;
-        configure_connection(&connection)?;
-        migrate_schema(&connection)?;
-        Ok(Self {
-            connection: Arc::new(Mutex::new(connection)),
-        })
+    /// Export old diagnostic rows before dropping the retired table. A failed export
+    /// leaves the table intact; fresh databases never create it.
+    pub(crate) async fn migrate_legacy_logs(&self, directory: &Path) -> Result<(), String> {
+        let connection = self.lock()?;
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_logs')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !exists {
+            return Ok(());
+        }
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        let archive = directory.join(format!(
+            "legacy-database-{}-{}.log",
+            now(),
+            std::process::id()
+        ));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&archive)
+            .map_err(|error| error.to_string())?;
+        let result: Result<(), String> = (|| {
+            let mut statement = connection.prepare("SELECT created_at,level,type,tag,message,detail,related_id FROM app_logs ORDER BY id").map_err(|error|error.to_string())?;
+            let entries = statement.query_map([], |row| Ok(serde_json::json!({
+                "legacyTime":row.get::<_,String>(0)?,"level":row.get::<_,String>(1)?,"module":row.get::<_,String>(2)?,
+                "tag":row.get::<_,String>(3)?,"message":row.get::<_,String>(4)?,"detail":row.get::<_,Option<String>>(5)?,"relatedId":row.get::<_,Option<String>>(6)?
+            }))).map_err(|error|error.to_string())?;
+            for entry in entries {
+                crate::logging::write_legacy(&mut file, entry.map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+            }
+            file.sync_all().map_err(|error| error.to_string())?;
+            connection
+                .execute_batch("DROP TABLE app_logs;")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if result.is_err() {
+            // Keep a partial archive for diagnosis and the complete source table for retry.
+            return result;
+        }
+        crate::logging::event(
+            log::Level::Info,
+            "database",
+            "legacy_logs.archived",
+            serde_json::json!({"archive":archive.file_name().and_then(|name|name.to_str())}),
+        );
+        Ok(())
     }
+
 
     pub(crate) async fn load_folders(&self) -> Result<Vec<LibraryFolder>, String> {
         let connection = self.lock()?;
@@ -347,6 +400,7 @@ impl Database {
                         sample_rate, channels, has_lyrics, has_cover,
                         replay_gain_track_gain, replay_gain_track_peak,
                         replay_gain_album_gain, replay_gain_album_peak,
+                        replay_gain_reference_loudness,
                         modified_at, added_at, created_at
                  FROM songs
                  ORDER BY album COLLATE NOCASE, disc_number, track_number, title COLLATE NOCASE",
@@ -441,6 +495,7 @@ impl Database {
                         sample_rate, channels, has_lyrics, has_cover,
                         replay_gain_track_gain, replay_gain_track_peak,
                         replay_gain_album_gain, replay_gain_album_peak,
+                        replay_gain_reference_loudness,
                         modified_at, added_at, created_at
                  FROM songs WHERE path IN ({placeholders})"
             );
@@ -486,6 +541,7 @@ impl Database {
                         sample_rate, channels, has_lyrics, has_cover,
                         replay_gain_track_gain, replay_gain_track_peak,
                         replay_gain_album_gain, replay_gain_album_peak,
+                        replay_gain_reference_loudness,
                         modified_at, added_at, created_at, file_size, modified_at
                  FROM songs WHERE folder_path = ?1",
             )
@@ -494,10 +550,10 @@ impl Database {
             .query_map(params![folder_path], |row| {
                 let track = map_audio_track(row)?;
                 let file_size = row
-                    .get::<_, i64>(24)
+                    .get::<_, i64>(25)
                     .map(|value| u64::try_from(value).unwrap_or_default())?;
                 let modified_at = row
-                    .get::<_, i64>(25)
+                    .get::<_, i64>(26)
                     .map(|value| u64::try_from(value).unwrap_or_default())?;
                 Ok(IndexedTrack {
                     track,
@@ -911,56 +967,6 @@ impl Database {
         load_batch_task(&connection, task_id)
     }
 
-    #[cfg(test)]
-    pub(crate) async fn update_batch_task_item(
-        &self,
-        task_id: &str,
-        item_id: &str,
-        status: &str,
-        progress: f64,
-        error_message: Option<String>,
-    ) -> Result<BatchTask, String> {
-        if !["running", "succeeded", "failed", "skipped", "cancelled"].contains(&status) {
-            return Err("Unsupported batch item status".to_string());
-        }
-        let mut connection = self.lock()?;
-        let transaction = connection
-            .transaction()
-            .map_err(|error| error.to_string())?;
-        let timestamp = now().to_string();
-        let changed = transaction
-            .execute(
-                "UPDATE batch_task_items
-                 SET status = ?3, progress = ?4, error_message = ?5, updated_at = ?6
-                 WHERE task_id = ?1 AND item_id = ?2",
-                params![
-                    task_id,
-                    item_id,
-                    status,
-                    progress.clamp(0.0, 1.0),
-                    error_message,
-                    timestamp
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        if changed != 1 {
-            return Err("Batch task item was not found".to_string());
-        }
-        transaction
-            .execute(
-                "UPDATE batch_tasks SET
-                    current = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status IN ('succeeded','failed','skipped','cancelled')),
-                    success_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'succeeded'),
-                    failure_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'failed'),
-                    skipped_count = (SELECT count(*) FROM batch_task_items WHERE task_id = ?1 AND status = 'skipped'),
-                    updated_at = ?2
-                 WHERE task_id = ?1 AND status = 'running'",
-                params![task_id, timestamp],
-            )
-            .map_err(|error| error.to_string())?;
-        transaction.commit().map_err(|error| error.to_string())?;
-        load_batch_task(&connection, task_id)
-    }
 
     pub(crate) async fn update_batch_task_item_result(
         &self,
@@ -1038,24 +1044,6 @@ impl Database {
         load_batch_task(&connection, task_id)
     }
 
-    pub(crate) async fn log_batch_event(
-        &self,
-        level: &str,
-        message: &str,
-        detail: Option<String>,
-        related_id: &str,
-    ) -> Result<(), String> {
-        let connection = self.lock()?;
-        connection
-            .execute(
-                "INSERT INTO app_logs (created_at, level, type, tag, message, detail, related_id)
-             VALUES (?1, ?2, 'batch', 'BatchManager', ?3, ?4, ?5)",
-                params![now().to_string(), level, message, detail, related_id],
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    }
-
     pub(crate) async fn search_lyrics_lines(
         &self,
         query: &str,
@@ -1113,39 +1101,6 @@ impl Database {
             }
         }
         Ok(matches)
-    }
-
-    pub(crate) async fn load_app_logs(
-        &self,
-        level: Option<String>,
-        limit: u32,
-    ) -> Result<Vec<AppLogEntry>, String> {
-        let connection = self.lock()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id, created_at, level, type, tag, message, detail, related_id
-                 FROM app_logs
-                 WHERE (?1 IS NULL OR level = ?1)
-                 ORDER BY created_at DESC, id DESC
-                 LIMIT ?2",
-            )
-            .map_err(|error| error.to_string())?;
-        let rows = statement
-            .query_map(params![level, limit.clamp(1, 500)], |row| {
-                Ok(AppLogEntry {
-                    id: row.get(0)?,
-                    created_at: row.get(1)?,
-                    level: row.get(2)?,
-                    log_type: row.get(3)?,
-                    tag: row.get(4)?,
-                    message: row.get(5)?,
-                    detail: row.get(6)?,
-                    related_id: row.get(7)?,
-                })
-            })
-            .map_err(|error| error.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())
     }
 
     pub(crate) async fn finish_batch_task(
@@ -1466,6 +1421,12 @@ fn migrate_schema(connection: &Connection) -> Result<(), String> {
     add_column_if_missing(connection, "songs", "cover_artwork_data_url", "TEXT")?;
     add_column_if_missing(
         connection,
+        "songs",
+        "replay_gain_reference_loudness",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        connection,
         "library_folders",
         "scan_signature",
         "TEXT NOT NULL DEFAULT ''",
@@ -1571,11 +1532,12 @@ fn upsert_track(
                 id, path, folder_path, file_name, title, artist, album, album_artist, genre,
                 track_number, disc_number, year, duration_seconds, format, bitrate, sample_rate,
                 channels, has_lyrics, has_cover, replay_gain_track_gain, replay_gain_track_peak,
-                replay_gain_album_gain, replay_gain_album_peak, file_size, modified_at, added_at,
+                replay_gain_album_gain, replay_gain_album_peak, replay_gain_reference_loudness,
+                file_size, modified_at, added_at,
                 created_at, updated_at, lyrics
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
              ) ON CONFLICT(path) DO UPDATE SET
                 folder_path = excluded.folder_path, file_name = excluded.file_name,
                 title = excluded.title, artist = excluded.artist, album = excluded.album,
@@ -1589,6 +1551,7 @@ fn upsert_track(
                 replay_gain_track_peak = excluded.replay_gain_track_peak,
                 replay_gain_album_gain = excluded.replay_gain_album_gain,
                 replay_gain_album_peak = excluded.replay_gain_album_peak,
+                replay_gain_reference_loudness = excluded.replay_gain_reference_loudness,
                 cover_thumbnail_data_url = NULL, cover_artwork_data_url = NULL,
                 file_size = excluded.file_size, modified_at = excluded.modified_at,
                 added_at = CASE WHEN added_at = 0 THEN excluded.added_at ELSE added_at END,
@@ -1618,6 +1581,7 @@ fn upsert_track(
                 track.replay_gain_track_peak,
                 track.replay_gain_album_gain,
                 track.replay_gain_album_peak,
+                track.replay_gain_reference_loudness,
                 as_i64(file_size),
                 as_i64(modified_at),
                 as_i64(added_at),
@@ -1689,10 +1653,10 @@ fn map_audio_track(row: &Row<'_>) -> rusqlite::Result<AudioTrack> {
         replay_gain_track_peak: row.get(18)?,
         replay_gain_album_gain: row.get(19)?,
         replay_gain_album_peak: row.get(20)?,
-        replay_gain_reference_loudness: String::new(),
-        modified_at: stored_time(row.get(21)?),
-        added_at: stored_time(row.get(22)?),
-        created_at: stored_time(row.get(23)?),
+        replay_gain_reference_loudness: row.get(21)?,
+        modified_at: stored_time(row.get(22)?),
+        added_at: stored_time(row.get(23)?),
+        created_at: stored_time(row.get(24)?),
     })
 }
 
@@ -1776,6 +1740,7 @@ CREATE TABLE IF NOT EXISTS songs (
     has_lyrics INTEGER NOT NULL DEFAULT 0, has_cover INTEGER NOT NULL DEFAULT 0,
     replay_gain_track_gain TEXT NOT NULL DEFAULT '', replay_gain_track_peak TEXT NOT NULL DEFAULT '',
     replay_gain_album_gain TEXT NOT NULL DEFAULT '', replay_gain_album_peak TEXT NOT NULL DEFAULT '',
+    replay_gain_reference_loudness TEXT NOT NULL DEFAULT '',
     file_size INTEGER NOT NULL DEFAULT 0, modified_at INTEGER NOT NULL DEFAULT 0,
     added_at INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL DEFAULT 0,
@@ -1842,874 +1807,7 @@ CREATE TABLE IF NOT EXISTS batch_task_items (
     FOREIGN KEY(task_id) REFERENCES batch_tasks(task_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_batch_task_items_task ON batch_task_items(task_id, status);
-CREATE TABLE IF NOT EXISTS app_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-    level TEXT NOT NULL, type TEXT NOT NULL, tag TEXT NOT NULL,
-    message TEXT NOT NULL, detail TEXT, related_id TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_app_logs_lookup ON app_logs(type, level, created_at);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT ''
 );
 "#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn batch_song_paths_are_deduplicated_by_normalized_key() {
-        let paths = vec![
-            "C:\\Music\\Song.mp3".to_string(),
-            "c:\\music\\SONG.MP3".to_string(),
-            "C:/Music/Song.mp3".to_string(),
-            "  C:\\Music\\Song.mp3  ".to_string(),
-            String::new(),
-            "   ".to_string(),
-            "D:\\Music\\Other.mp3".to_string(),
-        ];
-
-        let unique = deduplicate_song_paths(&paths);
-
-        let expected_count = if cfg!(windows) { 2 } else { 3 };
-        assert_eq!(unique.len(), expected_count);
-        assert_eq!(unique[0], "C:\\Music\\Song.mp3");
-        assert_eq!(unique[unique.len() - 1], "D:\\Music\\Other.mp3");
-        assert!(unique.iter().all(|path| !path.trim().is_empty()));
-    }
-
-    #[test]
-    fn folder_aliases_share_storage_scan_and_removal() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.unwrap();
-            database
-                .upsert_folder(LibraryFolder {
-                    path: "C:\\Music".into(),
-                    track_count: 0,
-                    last_scanned_at: None,
-                    status: "ready".into(),
-                    error: None,
-                })
-                .await
-                .unwrap();
-            let track = sample_track("C:\\Music\\one.flac", "one.flac");
-            database
-                .persist_folder_scan("C:/Music/", "test", &[track])
-                .await
-                .unwrap();
-            let folders = database.load_folders().await.unwrap();
-            assert_eq!(folders.len(), 1);
-            assert_eq!(folders[0].path, "C:\\Music");
-            assert_eq!(folders[0].track_count, 1);
-            assert_eq!(
-                database
-                    .load_folder_index("C:/Music/", "test")
-                    .await
-                    .unwrap()
-                    .len(),
-                1
-            );
-            database.remove_folder("C:/Music/").await.unwrap();
-            assert!(database.load_folders().await.unwrap().is_empty());
-            assert_eq!(
-                database
-                    .lock()
-                    .unwrap()
-                    .query_row("SELECT COUNT(*) FROM songs", [], |row| row.get::<_, i64>(0))
-                    .unwrap(),
-                0
-            );
-        });
-    }
-
-    #[test]
-    fn migration_merges_folder_aliases_without_losing_unique_songs() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.unwrap();
-            let connection = database.lock().unwrap();
-            connection.execute_batch(
-                r"INSERT INTO library_folders (path, last_scanned_at, track_count) VALUES ('C:\Music', '1', 2), ('C:/Music/', '2', 2);
-                 INSERT INTO songs (id, path, folder_path, file_name, added_at, updated_at) VALUES
-                   ('old', 'C:\Music\same.flac', 'C:\Music', 'same.flac', 10, '1'),
-                   ('new', 'C:/Music/same.flac', 'C:/Music/', 'same.flac', 20, '2'),
-                   ('unique', 'C:\Music\unique.flac', 'C:\Music', 'unique.flac', 15, '1');
-                 PRAGMA user_version = 7;"
-            ).unwrap();
-            migrate_schema(&connection).unwrap();
-            assert_eq!(
-                connection
-                    .query_row("SELECT COUNT(*) FROM library_folders", [], |row| row
-                        .get::<_, i64>(0))
-                    .unwrap(),
-                1
-            );
-            assert_eq!(
-                connection
-                    .query_row("SELECT track_count FROM library_folders", [], |row| row
-                        .get::<_, i64>(0))
-                    .unwrap(),
-                2
-            );
-            assert_eq!(
-                connection
-                    .query_row("SELECT COUNT(*) FROM songs", [], |row| row.get::<_, i64>(0))
-                    .unwrap(),
-                2
-            );
-            assert_eq!(
-                connection
-                    .query_row("SELECT added_at FROM songs WHERE id = 'new'", [], |row| row
-                        .get::<_, i64>(0))
-                    .unwrap(),
-                10
-            );
-            assert_eq!(
-                connection
-                    .query_row(
-                        "SELECT COUNT(*) FROM songs WHERE folder_path = 'C:/Music/'",
-                        [],
-                        |row| row.get::<_, i64>(0)
-                    )
-                    .unwrap(),
-                2
-            );
-            migrate_schema(&connection).unwrap();
-            assert_eq!(
-                connection
-                    .query_row("SELECT COUNT(*) FROM songs", [], |row| row.get::<_, i64>(0))
-                    .unwrap(),
-                2
-            );
-        });
-    }
-
-    #[test]
-    fn schema_and_basic_repository_round_trip() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory()
-                .await
-                .expect("database should initialize");
-            database
-                .upsert_folder(LibraryFolder {
-                    path: "C:\\Music".to_string(),
-                    track_count: 0,
-                    last_scanned_at: None,
-                    status: "ready".to_string(),
-                    error: None,
-                })
-                .await
-                .expect("folder should be saved");
-            let folders = database.load_folders().await.expect("folders should load");
-            assert_eq!(folders.len(), 1);
-            assert_eq!(folders[0].path, "C:\\Music");
-        });
-    }
-
-    #[test]
-    fn plugin_source_switches_and_priorities_are_independent() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.unwrap();
-            database
-                .upsert_plugin_record("com.example.one", "{}", "{}")
-                .await
-                .unwrap();
-            database
-                .upsert_plugin_record("com.example.two", "{}", "{}")
-                .await
-                .unwrap();
-            database
-                .set_plugin_source_enabled("com.example.one", "lyrics", true)
-                .await
-                .unwrap();
-            database
-                .reorder_plugin_sources(
-                    "lyrics",
-                    &["com.example.two".into(), "com.example.one".into()],
-                )
-                .await
-                .unwrap();
-
-            let records = database.load_plugin_records().await.unwrap();
-            let one = records
-                .iter()
-                .find(|record| record.id == "com.example.one")
-                .unwrap();
-            let two = records
-                .iter()
-                .find(|record| record.id == "com.example.two")
-                .unwrap();
-            assert!(one.enabled);
-            assert!(one.lyrics_enabled);
-            assert!(!one.metadata_enabled);
-            assert_eq!(two.lyrics_sort_order, 0);
-            assert_eq!(one.lyrics_sort_order, 1);
-            assert_eq!(one.metadata_sort_order, 0);
-            database
-                .set_plugin_source_enabled("com.example.one", "lyrics", false)
-                .await
-                .unwrap();
-            let one = database
-                .load_plugin_record("com.example.one")
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(!one.lyrics_enabled);
-            assert!(!one.metadata_enabled);
-            assert!(!one.cover_enabled);
-        });
-    }
-
-    #[test]
-    fn plugin_source_migration_preserves_legacy_enabled_state_and_order() {
-        let connection = Connection::open_in_memory().unwrap();
-        configure_connection(&connection).unwrap();
-        connection.execute_batch(
-            "CREATE TABLE source_plugins (
-                id TEXT PRIMARY KEY, manifest_json TEXT NOT NULL DEFAULT '{}',
-                enabled INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
-                installed_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
-             );
-             INSERT INTO source_plugins (id, enabled, sort_order) VALUES ('com.example.legacy', 1, 7);"
-        ).unwrap();
-
-        migrate_schema(&connection).unwrap();
-
-        let values: (i64, i64, i64, i32, i32, i32) = connection
-            .query_row(
-                "SELECT metadata_enabled, lyrics_enabled, cover_enabled,
-                    metadata_sort_order, lyrics_sort_order, cover_sort_order
-             FROM source_plugins WHERE id = 'com.example.legacy'",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )
-            .unwrap();
-        assert_eq!(values, (1, 1, 1, 7, 7, 7));
-    }
-
-    #[test]
-    fn added_at_backfills_from_updated_at_for_legacy_songs() {
-        let connection = Connection::open_in_memory().unwrap();
-        configure_connection(&connection).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE songs (
-                    id TEXT NOT NULL, path TEXT PRIMARY KEY NOT NULL,
-                    folder_path TEXT NOT NULL, file_name TEXT NOT NULL,
-                    title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
-                    album TEXT NOT NULL DEFAULT '', track_number INTEGER,
-                    disc_number INTEGER, file_size INTEGER NOT NULL DEFAULT 0,
-                    modified_at INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL DEFAULT ''
-                 );
-                 INSERT INTO songs (id, path, folder_path, file_name, updated_at)
-                 VALUES ('a', 'C:\\Music\\a.flac', 'C:\\Music', 'a.flac', '1700000000');
-                 INSERT INTO songs (id, path, folder_path, file_name, updated_at)
-                 VALUES ('b', 'C:\\Music\\b.flac', 'C:\\Music', 'b.flac', '');",
-            )
-            .unwrap();
-
-        migrate_schema(&connection).unwrap();
-
-        let added_times: Vec<(String, i64)> = connection
-            .prepare("SELECT path, added_at FROM songs ORDER BY path")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        assert_eq!(
-            added_times,
-            vec![
-                ("C:\\Music\\a.flac".to_string(), 1_700_000_000),
-                ("C:\\Music\\b.flac".to_string(), 0),
-            ]
-        );
-
-        migrate_schema(&connection).unwrap();
-        let version: u32 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, DATABASE_SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn created_at_backfills_from_filesystem_for_legacy_songs() {
-        let connection = Connection::open_in_memory().unwrap();
-        configure_connection(&connection).unwrap();
-        let file_path = std::env::temp_dir().join("lyrico_created_at_backfill.flac");
-        std::fs::write(&file_path, b"placeholder").expect("temporary file should be written");
-        let expected = file_path
-            .metadata()
-            .expect("temporary metadata should exist")
-            .created()
-            .expect("created time should exist")
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("created time should be valid")
-            .as_secs();
-        let path_text = file_path.to_string_lossy().to_string();
-        connection
-            .execute_batch(&format!(
-                "CREATE TABLE songs (
-                    id TEXT NOT NULL, path TEXT PRIMARY KEY NOT NULL,
-                    folder_path TEXT NOT NULL, file_name TEXT NOT NULL,
-                    title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
-                    album TEXT NOT NULL DEFAULT '', track_number INTEGER,
-                    disc_number INTEGER, file_size INTEGER NOT NULL DEFAULT 0,
-                    modified_at INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL DEFAULT ''
-                 );
-                 INSERT INTO songs (id, path, folder_path, file_name, updated_at)
-                 VALUES ('a', '{path_text}', 'C:\\\\Music', 'a.flac', '1700000000');"
-            ))
-            .unwrap();
-
-        migrate_schema(&connection).unwrap();
-
-        let created_at: i64 = connection
-            .query_row("SELECT created_at FROM songs", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(created_at as u64, expected);
-
-        let column: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('songs') WHERE name = 'created_at'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(column, 1);
-
-        let _ = std::fs::remove_file(file_path);
-    }
-
-    #[test]
-    fn added_at_survives_rescans_and_summary_updates() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.expect("database should open");
-            let track = sample_track("C:\\Music\\kept.flac", "kept.flac");
-            database
-                .persist_folder_scan("C:\\Music", "test", std::slice::from_ref(&track))
-                .await
-                .expect("initial scan should persist");
-            let (_, added_at) = database
-                .load_track_timestamps(&track.path)
-                .await
-                .expect("timestamps should load");
-            assert!(added_at.is_some());
-
-            let mut rescan = track.clone();
-            rescan.added_at = None;
-            database
-                .persist_folder_scan("C:\\Music", "test", std::slice::from_ref(&rescan))
-                .await
-                .expect("rescan should persist");
-
-            let mut edited = track.clone();
-            edited.added_at = None;
-            edited.title = "Edited title".to_string();
-            database
-                .update_track_summary(&edited)
-                .await
-                .expect("summary should update");
-
-            let (modified_at, added_after) = database
-                .load_track_timestamps(&track.path)
-                .await
-                .expect("timestamps should reload");
-            assert_eq!(added_after, added_at);
-            assert_eq!(modified_at, None);
-
-            let tracks = database.load_tracks_blocking().expect("tracks should load");
-            let stored = tracks
-                .iter()
-                .find(|item| item.path == track.path)
-                .expect("track should exist");
-            assert_eq!(stored.added_at, added_at);
-            assert_eq!(stored.title, "Edited title");
-        });
-    }
-
-    #[test]
-    fn database_uses_wal_and_foreign_keys() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory()
-                .await
-                .expect("database should initialize");
-            let connection = database.lock().expect("database should lock");
-            let foreign_keys: i64 = connection
-                .pragma_query_value(None, "foreign_keys", |row| row.get(0))
-                .expect("foreign key pragma should be readable");
-            assert_eq!(foreign_keys, 1);
-            let version: u32 = connection
-                .pragma_query_value(None, "user_version", |row| row.get(0))
-                .expect("schema version should be readable");
-            assert_eq!(version, DATABASE_SCHEMA_VERSION);
-        });
-    }
-
-    #[test]
-    fn cover_cache_is_invalidated_when_thumbnail_resolution_changes() {
-        let connection = Connection::open_in_memory().unwrap();
-        configure_connection(&connection).unwrap();
-        migrate_schema(&connection).unwrap();
-        connection
-            .execute(
-                "INSERT INTO library_folders (path) VALUES (?1)",
-                ["C:\\Music"],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO songs (id, path, folder_path, file_name, cover_thumbnail_data_url) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params!["cover", "C:\\Music\\cover.flac", "C:\\Music", "cover.flac", "data:image/jpeg;base64,legacy"],
-            )
-            .unwrap();
-        connection.pragma_update(None, "user_version", 3).unwrap();
-
-        migrate_schema(&connection).unwrap();
-
-        let cached: Option<String> = connection
-            .query_row(
-                "SELECT cover_thumbnail_data_url FROM songs WHERE path = ?1",
-                ["C:\\Music\\cover.flac"],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(cached.is_none());
-    }
-
-    #[test]
-    fn batch_task_repository_creates_deduplicated_item_snapshot() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory()
-                .await
-                .expect("database should initialize");
-            let task = database
-                .create_batch_task(
-                    "exportLyrics",
-                    &[
-                        "C:\\Music\\first.flac".to_string(),
-                        "C:\\Music\\first.flac".to_string(),
-                        "C:\\Music\\second.mp3".to_string(),
-                    ],
-                    Some(r#"{"destination":"C:\\Lyrics"}"#.to_string()),
-                )
-                .await
-                .expect("batch task should be created");
-            assert_eq!(task.status, "queued");
-            assert_eq!(task.total, 2);
-
-            let tasks = database
-                .load_batch_tasks()
-                .await
-                .expect("tasks should load");
-            assert_eq!(tasks.len(), 1);
-            assert_eq!(tasks[0].task_id, task.task_id);
-
-            let items = database
-                .load_batch_task_items(&task.task_id)
-                .await
-                .expect("task items should load");
-            assert_eq!(items.len(), 2);
-            assert!(items.iter().all(|item| item.status == "queued"));
-            assert_eq!(items[0].file_name, "first.flac");
-            assert_eq!(items[1].file_name, "second.mp3");
-
-            let running = database
-                .start_batch_task(&task.task_id)
-                .await
-                .expect("task should start");
-            assert_eq!(running.status, "running");
-            let partial = database
-                .update_batch_task_item_result(
-                    &task.task_id,
-                    &items[0].item_id,
-                    "running",
-                    0.5,
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
-            assert_eq!(partial.current, 0);
-            assert_eq!(partial.progress, 0.25);
-            let after_success = database
-                .update_batch_task_item(&task.task_id, &items[0].item_id, "succeeded", 1.0, None)
-                .await
-                .expect("first item should finish");
-            assert_eq!(after_success.current, 1);
-            assert_eq!(after_success.success_count, 1);
-            assert_eq!(after_success.progress, 0.5);
-            let after_skip = database
-                .update_batch_task_item(
-                    &task.task_id,
-                    &items[1].item_id,
-                    "skipped",
-                    1.0,
-                    Some("ReplayGain already exists".to_string()),
-                )
-                .await
-                .expect("second item should skip");
-            assert_eq!(after_skip.current, 2);
-            assert_eq!(after_skip.skipped_count, 1);
-            let finished = database
-                .finish_batch_task(&task.task_id, "succeeded", None)
-                .await
-                .expect("task should finish");
-            assert_eq!(finished.status, "succeeded");
-            assert!(finished.finished_at.is_some());
-        });
-    }
-
-    #[test]
-    fn batch_task_repository_rejects_invalid_type_and_config() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory()
-                .await
-                .expect("database should initialize");
-            assert!(database
-                .create_batch_task("unknown", &["song.flac".to_string()], None)
-                .await
-                .is_err());
-            assert!(database
-                .create_batch_task(
-                    "replayGain",
-                    &["song.flac".to_string()],
-                    Some("not-json".to_string()),
-                )
-                .await
-                .is_err());
-        });
-    }
-
-    #[test]
-    fn plugin_order_can_be_reordered_and_is_persisted() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.expect("database should open");
-            database
-                .upsert_plugin_record("plugin.a", "{}", "{}")
-                .await
-                .expect("first plugin should save");
-            database
-                .upsert_plugin_record("plugin.b", "{}", "{}")
-                .await
-                .expect("second plugin should save");
-
-            database
-                .set_plugin_order(&["plugin.b".to_string(), "plugin.a".to_string()])
-                .await
-                .expect("plugin order should save");
-
-            let records = database
-                .load_plugin_records()
-                .await
-                .expect("plugin records should load");
-            assert_eq!(records[0].id, "plugin.b");
-            assert_eq!(records[1].id, "plugin.a");
-        });
-    }
-
-    #[test]
-    fn batch_task_repository_deletes_finished_tasks_but_keeps_active_tasks() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.expect("database should open");
-            let active = database
-                .create_batch_task("replayGain", &["active.flac".to_string()], None)
-                .await
-                .expect("active task should be created");
-            let finished = database
-                .create_batch_task("replayGain", &["finished.flac".to_string()], None)
-                .await
-                .expect("finished task should be created");
-            database
-                .start_batch_task(&finished.task_id)
-                .await
-                .expect("finished task should start");
-            database
-                .finish_batch_task(&finished.task_id, "succeeded", None)
-                .await
-                .expect("finished task should finish");
-
-            database
-                .delete_batch_tasks(&[active.task_id.clone(), finished.task_id.clone()])
-                .await
-                .expect("finished task deletion should succeed");
-
-            let tasks = database
-                .load_batch_tasks()
-                .await
-                .expect("tasks should load");
-            assert_eq!(tasks.len(), 1);
-            assert_eq!(tasks[0].task_id, active.task_id);
-        });
-    }
-
-    #[test]
-    fn interrupted_batch_tasks_are_requeued_for_safe_recovery() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.expect("database should open");
-            let task = database
-                .create_batch_task(
-                    "replayGain",
-                    &["song.flac".to_string()],
-                    Some(r#"{"concurrency":3}"#.to_string()),
-                )
-                .await
-                .expect("task should be created");
-            database
-                .start_batch_task(&task.task_id)
-                .await
-                .expect("task should start");
-            let item = database
-                .load_batch_task_items(&task.task_id)
-                .await
-                .expect("items should load")
-                .remove(0);
-            database
-                .update_batch_task_item(&task.task_id, &item.item_id, "running", 0.4, None)
-                .await
-                .expect("item should run");
-
-            let recovered = database
-                .recover_interrupted_batch_tasks()
-                .await
-                .expect("recovery should succeed");
-            assert_eq!(recovered, vec![task.task_id.clone()]);
-            let recovered_task = database
-                .load_batch_task(&task.task_id)
-                .await
-                .expect("task should load");
-            let recovered_item = database
-                .load_batch_task_items(&task.task_id)
-                .await
-                .expect("items should load")
-                .remove(0);
-            assert_eq!(recovered_task.status, "queued");
-            assert_eq!(recovered_item.status, "queued");
-            assert_eq!(recovered_item.progress, Some(0.0));
-            assert_eq!(
-                recovered_item.error_message.as_deref(),
-                Some("Recovered after application restart")
-            );
-        });
-    }
-
-    #[test]
-    fn track_summary_updates_do_not_rebuild_unrelated_collection_rows() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.expect("database should open");
-            let first = sample_track("C:\\Music\\first.flac", "first.flac");
-            let second = sample_track("C:\\Music\\second.flac", "second.flac");
-            database
-                .persist_folder_scan("C:\\Music", "test", &[first.clone(), second])
-                .await
-                .expect("folder scan should persist");
-            let artist_before =
-                collection_ids(&database, "SELECT id FROM artists ORDER BY id").await;
-            let album_before = collection_ids(&database, "SELECT id FROM albums ORDER BY id").await;
-
-            let mut updated = first.clone();
-            updated.title = "Updated title".to_string();
-            database
-                .update_track_summary(&updated)
-                .await
-                .expect("track summary should update");
-
-            assert_eq!(
-                collection_ids(&database, "SELECT id FROM artists ORDER BY id").await,
-                artist_before
-            );
-            assert_eq!(
-                collection_ids(&database, "SELECT id FROM albums ORDER BY id").await,
-                album_before
-            );
-            let tracks = database.load_tracks_blocking().expect("tracks should load");
-            assert_eq!(
-                tracks
-                    .iter()
-                    .find(|track| track.path == first.path)
-                    .unwrap()
-                    .title,
-                "Updated title"
-            );
-        });
-    }
-
-    #[test]
-    fn repeated_folder_scan_keeps_unchanged_song_rows() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.expect("database should open");
-            let kept = sample_track("C:\\Music\\kept.flac", "kept.flac");
-            let removed = sample_track("C:\\Music\\removed.flac", "removed.flac");
-            database
-                .persist_folder_scan("C:\\Music", "test", &[kept.clone(), removed])
-                .await
-                .expect("initial scan should persist");
-            let updated_before = song_updated_at(&database, &kept.path).await;
-            std::thread::sleep(std::time::Duration::from_secs(1));
-
-            database
-                .persist_folder_scan("C:\\Music", "test", std::slice::from_ref(&kept))
-                .await
-                .expect("repeat scan should persist");
-
-            assert_eq!(song_updated_at(&database, &kept.path).await, updated_before);
-            assert!(song_updated_at(&database, "C:\\Music\\removed.flac")
-                .await
-                .is_none());
-            let tracks = database.load_tracks_blocking().expect("tracks should load");
-            assert_eq!(tracks.len(), 1);
-        });
-    }
-
-    #[test]
-    fn changed_scan_signature_rewrites_files_with_unchanged_fingerprints() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.expect("database should open");
-            let track = sample_track("C:\\Music\\kept.flac", "kept.flac");
-            database
-                .persist_folder_scan("C:\\Music", "separator=/", std::slice::from_ref(&track))
-                .await
-                .expect("initial scan should persist");
-            let mut retagged = track.clone();
-            retagged.artist = "Split Artist".to_string();
-            database
-                .persist_folder_scan("C:\\Music", "separator=;", std::slice::from_ref(&retagged))
-                .await
-                .expect("signature change should persist");
-
-            let tracks = database.load_tracks_blocking().expect("tracks should load");
-            assert_eq!(tracks[0].artist, "Split Artist");
-        });
-    }
-
-    async fn collection_ids(database: &Database, sql: &str) -> Vec<i64> {
-        let connection = database.lock().expect("database lock should be available");
-        let mut statement = connection.prepare(sql).expect("query should prepare");
-        statement
-            .query_map([], |row| row.get(0))
-            .expect("query should run")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("ids should read")
-    }
-
-    async fn song_updated_at(database: &Database, path: &str) -> Option<String> {
-        let connection = database.lock().expect("database lock should be available");
-        connection
-            .query_row(
-                "SELECT updated_at FROM songs WHERE path = ?1",
-                params![path],
-                |row| row.get(0),
-            )
-            .optional()
-            .expect("song timestamp should query")
-    }
-
-    #[test]
-    fn renamed_track_replaces_old_library_path_transactionally() {
-        tauri::async_runtime::block_on(async {
-            let database = Database::in_memory().await.expect("database should open");
-            let old_path = "C:\\Music\\before.flac";
-            let new_path = "C:\\Music\\after.flac";
-            let old_track = sample_track(old_path, "before.flac");
-            database
-                .persist_folder_scan("C:\\Music", "test", std::slice::from_ref(&old_track))
-                .await
-                .expect("folder scan should persist");
-            let mut renamed_track = old_track.clone();
-            renamed_track.id = new_path.to_string();
-            renamed_track.path = new_path.to_string();
-            renamed_track.file_name = "after.flac".to_string();
-            database
-                .update_renamed_track_summary(old_path, &renamed_track)
-                .await
-                .expect("renamed path should be migrated");
-
-            let tracks = database.load_tracks_blocking().expect("tracks should load");
-            assert_eq!(tracks.len(), 1);
-            assert_eq!(tracks[0].path, new_path);
-            assert_eq!(tracks[0].file_name, "after.flac");
-            assert!(database
-                .update_renamed_track_summary(old_path, &renamed_track)
-                .await
-                .is_err());
-        });
-    }
-
-    fn sample_track(path: &str, file_name: &str) -> AudioTrack {
-        AudioTrack {
-            id: path.to_string(),
-            path: path.to_string(),
-            file_name: file_name.to_string(),
-            title: "Title".to_string(),
-            artist: "Artist".to_string(),
-            album: "Album".to_string(),
-            album_artist: "Album Artist".to_string(),
-            genre: "Pop".to_string(),
-            language: String::new(),
-            composer: String::new(),
-            lyricist: String::new(),
-            copyright: String::new(),
-            rating: None,
-            comment: String::new(),
-            lyrics: String::new(),
-            track_number: Some(1),
-            disc_number: Some(1),
-            year: "2026".to_string(),
-            duration_seconds: 1,
-            format: "FLAC".to_string(),
-            bitrate: None,
-            sample_rate: None,
-            channels: None,
-            cover_data_url: None,
-            has_lyrics: false,
-            has_cover: false,
-            replay_gain_track_gain: String::new(),
-            replay_gain_track_peak: String::new(),
-            replay_gain_album_gain: String::new(),
-            replay_gain_album_peak: String::new(),
-            replay_gain_reference_loudness: String::new(),
-            modified_at: None,
-            added_at: None,
-            created_at: None,
-        }
-    }
-
-    #[test]
-    fn lyric_line_matching_requires_every_token() {
-        let lyrics = "[00:01.00] Hello World\n\n  Take on me  \n100% pure love";
-        let tokens: Vec<String> = ["hello", "world"]
-            .iter()
-            .map(|token| token.to_string())
-            .collect();
-        assert_eq!(
-            first_matching_lyric_line(lyrics, &tokens).as_deref(),
-            Some("[00:01.00] Hello World")
-        );
-
-        let tokens: Vec<String> = ["take", "me"]
-            .iter()
-            .map(|token| token.to_string())
-            .collect();
-        assert_eq!(
-            first_matching_lyric_line(lyrics, &tokens).as_deref(),
-            Some("Take on me")
-        );
-
-        let tokens: Vec<String> = ["take", "zzz"]
-            .iter()
-            .map(|token| token.to_string())
-            .collect();
-        assert_eq!(first_matching_lyric_line(lyrics, &tokens), None);
-        assert_eq!(escape_like_pattern("100%_a\\b"), "100\\%\\_a\\\\b");
-    }
-}

@@ -22,20 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-# Native dependency downloads and local build output
-src-tauri/native/taglib-build/
 src-tauri/native/taglib/_deps/
-src-tauri/native/taglib-build-*/
+.playwright-cli/
+build/
+src-tauri/native/ffmpeg/runtime/
+output/
 
 # Local agent state
-.opencode/
 .ccgui/
-test-lofty/target/
-
-# Local browser verification artifacts
-.playwright-cli/
-output/playwright/
-
-# Native CMake build directory
-build/

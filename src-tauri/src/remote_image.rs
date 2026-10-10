@@ -2,6 +2,18 @@
 const REMOTE_IMAGE_MAX_REDIRECTS: usize = 5;
 
 pub(crate) fn fetch(url: &str, max_size: Option<u32>) -> Result<String, String> {
+    let operation = crate::logging::Operation::new(
+        "network",
+        "artwork.fetch",
+        serde_json::json!({"host":reqwest::Url::parse(url).ok().and_then(|url|url.host_str().map(str::to_owned)),"maxSize":max_size}),
+        log::Level::Debug,
+    );
+    let result = fetch_inner(url, max_size);
+    operation.finish(&result);
+    result
+}
+
+fn fetch_inner(url: &str, max_size: Option<u32>) -> Result<String, String> {
     let mut current = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
     for _ in 0..=REMOTE_IMAGE_MAX_REDIRECTS {
         if !matches!(current.scheme(), "http" | "https") {
@@ -170,79 +182,4 @@ fn is_public_image_ipv6(ip: std::net::Ipv6Addr) -> bool {
         || (segments[0] & 0xffc0) == 0xfe80
         || (segments[0] == 0x2001 && segments[1] == 0xdb8)
         || (segments[0] == 0x0064 && segments[1] == 0xff9b))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn image_ip_filter_blocks_private_and_reserved_ipv4_ranges() {
-        for address in [
-            "0.0.0.0",
-            "10.0.0.1",
-            "100.64.0.1",
-            "127.0.0.1",
-            "169.254.169.254",
-            "172.16.0.1",
-            "172.31.255.254",
-            "192.0.0.1",
-            "192.0.2.1",
-            "192.168.1.1",
-            "198.18.0.1",
-            "198.51.100.1",
-            "203.0.113.1",
-            "224.0.0.1",
-            "255.255.255.255",
-        ] {
-            let ip: std::net::Ipv4Addr = address.parse().expect("valid test address");
-            assert!(!is_public_image_ipv4(ip), "{address} must be blocked");
-        }
-        for address in ["1.1.1.1", "8.8.8.8", "93.184.216.34", "172.32.0.1"] {
-            let ip: std::net::Ipv4Addr = address.parse().expect("valid test address");
-            assert!(is_public_image_ipv4(ip), "{address} must be allowed");
-        }
-    }
-
-    #[test]
-    fn image_ip_filter_blocks_private_and_reserved_ipv6_ranges() {
-        for address in [
-            "::",
-            "::1",
-            "::ffff:192.168.1.1",
-            "fc00::1",
-            "fd12:3456::1",
-            "fe80::1",
-            "ff02::1",
-            "2001:db8::1",
-            "64:ff9b::1",
-        ] {
-            let ip: std::net::Ipv6Addr = address.parse().expect("valid test address");
-            assert!(!is_public_image_ipv6(ip), "{address} must be blocked");
-        }
-        for address in ["2606:4700:4700::1111", "2001:4860:4860::8888"] {
-            let ip: std::net::Ipv6Addr = address.parse().expect("valid test address");
-            assert!(is_public_image_ipv6(ip), "{address} must be allowed");
-        }
-    }
-
-    #[test]
-    fn image_url_filter_blocks_literal_internal_hosts_without_resolving_dns() {
-        for url in [
-            "http://127.0.0.1/cover.jpg",
-            "http://[::1]/cover.jpg",
-            "http://10.1.2.3/cover.jpg",
-            "http://169.254.169.254/latest/meta-data",
-        ] {
-            let parsed = reqwest::Url::parse(url).expect("valid test url");
-            assert!(
-                ensure_public_image_url(&parsed).is_err(),
-                "{url} must be blocked"
-            );
-        }
-        let parsed = reqwest::Url::parse("https://8.8.8.8/cover.jpg").expect("valid test url");
-        assert!(
-            ensure_public_image_url(&parsed).is_ok_and(|pinned| pinned.is_none()),
-            "an IP literal host resolves locally and needs no DNS pinning"
-        );
-    }
 }

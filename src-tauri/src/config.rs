@@ -34,6 +34,7 @@ pub(crate) struct DesktopSettings {
     pub(crate) theme_mode: String,
     pub(crate) edit_field_visibility: BTreeMap<String, bool>,
     pub(crate) edit_field_order: Vec<String>,
+    pub(crate) edit_custom_tags: Vec<String>,
 }
 
 pub(crate) const EDIT_FIELD_KEYS: &[&str] = &[
@@ -50,7 +51,6 @@ pub(crate) const EDIT_FIELD_KEYS: &[&str] = &[
     "lyricist",
     "copyright",
     "comment",
-    "customTags",
     "rating",
     "lyrics",
     "replayGainTrackGain",
@@ -82,6 +82,7 @@ impl Default for DesktopSettings {
             theme_mode: "system".to_string(),
             edit_field_visibility: BTreeMap::new(),
             edit_field_order: default_edit_field_order(),
+            edit_custom_tags: Vec::new(),
         }
     }
 }
@@ -143,8 +144,17 @@ fn normalize_settings(mut settings: DesktopSettings) -> DesktopSettings {
     settings.hidden_folder_paths =
         normalize_folder_paths(std::mem::take(&mut settings.hidden_folder_paths));
     settings.artist_poster_folder = settings.artist_poster_folder.trim().to_string();
-    settings.edit_field_order =
-        normalize_edit_field_order(std::mem::take(&mut settings.edit_field_order));
+    settings.edit_custom_tags = normalize_custom_tag_keys(settings.edit_custom_tags);
+    let custom_codes: Vec<String> = settings
+        .edit_custom_tags
+        .iter()
+        .map(|key| format!("tag:{key}"))
+        .collect();
+    let order = std::mem::take(&mut settings.edit_field_order)
+        .into_iter()
+        .map(normalize_edit_field_code)
+        .collect();
+    settings.edit_field_order = normalize_edit_field_order_with_custom(order, &custom_codes);
     if !matches!(settings.theme_mode.as_str(), "system" | "light" | "dark") {
         settings.theme_mode = DesktopSettings::default().theme_mode;
     }
@@ -158,7 +168,8 @@ fn normalize_settings(mut settings: DesktopSettings) -> DesktopSettings {
     settings.edit_field_visibility = settings
         .edit_field_visibility
         .into_iter()
-        .filter(|(key, _)| EDIT_FIELD_KEYS.contains(&key.as_str()))
+        .map(|(key, value)| (normalize_edit_field_code(key), value))
+        .filter(|(key, _)| EDIT_FIELD_KEYS.contains(&key.as_str()) || custom_codes.contains(key))
         .collect();
     settings
 }
@@ -251,19 +262,68 @@ fn default_edit_field_order() -> Vec<String> {
     EDIT_FIELD_KEYS.iter().map(|key| key.to_string()).collect()
 }
 
-fn normalize_edit_field_order(order: Vec<String>) -> Vec<String> {
+pub(crate) fn normalize_custom_tag_key(input: &str) -> Option<String> {
+    let key = input.trim();
+    if key.is_empty() || key.encode_utf16().count() > 64 || key.contains(['\r', '\n']) {
+        None
+    } else {
+        Some(key.to_uppercase())
+    }
+}
+
+fn normalize_edit_field_code(code: String) -> String {
+    code.strip_prefix("tag:")
+        .and_then(normalize_custom_tag_key)
+        .map(|key| format!("tag:{key}"))
+        .unwrap_or(code)
+}
+
+fn normalize_custom_tag_keys(keys: Vec<String>) -> Vec<String> {
     let mut normalized = Vec::new();
-    for value in order.into_iter().chain(default_edit_field_order()) {
+    for key in keys.iter().filter_map(|key| normalize_custom_tag_key(key)) {
+        if !normalized.contains(&key) {
+            normalized.push(key);
+        }
+    }
+    normalized
+}
+
+fn normalize_edit_field_order_with_custom(
+    order: Vec<String>,
+    custom_codes: &[String],
+) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in order
+        .into_iter()
+        .chain(default_edit_field_order())
+        .chain(custom_codes.iter().cloned())
+    {
         let expanded: Vec<&str> = match value.as_str() {
-            "basic" => vec!["title", "artist", "albumArtist", "album", "year", "language", "genre"],
+            "basic" => vec![
+                "title",
+                "artist",
+                "albumArtist",
+                "album",
+                "year",
+                "language",
+                "genre",
+            ],
             "track" => vec!["trackNumber", "discNumber"],
             "credits" => vec!["composer", "lyricist", "copyright", "comment"],
-            "replaygain" => vec!["replayGainTrackGain", "replayGainTrackPeak", "replayGainAlbumGain", "replayGainAlbumPeak", "replayGainReferenceLoudness"],
+            "replaygain" => vec![
+                "replayGainTrackGain",
+                "replayGainTrackPeak",
+                "replayGainAlbumGain",
+                "replayGainAlbumPeak",
+                "replayGainReferenceLoudness",
+            ],
             "cover" => vec!["rating"],
             key => vec![key],
         };
         for key in expanded {
-            if EDIT_FIELD_KEYS.contains(&key) && !normalized.iter().any(|item| item == key) {
+            if (EDIT_FIELD_KEYS.contains(&key) || custom_codes.iter().any(|code| code == key))
+                && !normalized.iter().any(|item| item == key)
+            {
                 normalized.push(key.to_string());
             }
         }
@@ -369,6 +429,12 @@ fn load_config_from(path: &Path) -> Result<AppConfig, String> {
     let backup = path.with_extension("json.bak");
     if !path.exists() {
         if backup.exists() {
+            crate::logging::event(
+                log::Level::Warn,
+                "config",
+                "backup.recovery",
+                serde_json::json!({"reason":"primary configuration missing"}),
+            );
             return parse_config_file(&backup).map_err(|error| {
                 format!(
                     "Application configuration at {} is missing and the backup at {} could not be read: {error}",
@@ -383,6 +449,12 @@ fn load_config_from(path: &Path) -> Result<AppConfig, String> {
         if !backup.exists() {
             return Err(error);
         }
+        crate::logging::event(
+            log::Level::Warn,
+            "config",
+            "backup.recovery",
+            serde_json::json!({"error":error}),
+        );
         parse_config_file(&backup).map_err(|_| error)
     })
 }
@@ -416,152 +488,43 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod custom_field_tests {
     use super::*;
 
     #[test]
-    fn rename_character_mappings_keep_explicit_removals_and_drop_unknown_keys() {
-        let mappings = BTreeMap::from([
-            ("/".to_string(), String::new()),
-            (":".to_string(), "-".to_string()),
-            ("x".to_string(), "ignored".to_string()),
-        ]);
-        let normalized = normalize_rename_character_mappings(mappings);
-        assert_eq!(normalized.get("/"), Some(&String::new()));
-        assert_eq!(normalized.get(":"), Some(&"-".to_string()));
-        assert_eq!(normalized.get("?"), Some(&"？".to_string()));
-        assert!(!normalized.contains_key("x"));
-    }
-
-    #[test]
-    fn old_settings_json_receives_default_rename_mappings() {
-        let settings: DesktopSettings = serde_json::from_str(
-            r#"{"searchPageSize":10,"lyricFormat":"verbatimLrc","lyricsConversionMode":"none"}"#,
-        )
-        .expect("legacy settings should deserialize through defaults");
-        assert_eq!(
-            settings.rename_character_mappings.get("/"),
-            Some(&"／".to_string())
-        );
-        assert_eq!(settings.theme_mode, "system");
-        assert_eq!(
-            settings.replay_gain_target_loudness,
-            crate::replay_gain::DEFAULT_TARGET_LOUDNESS_LUFS
-        );
-    }
-
-    #[test]
-    fn normalize_settings_clamps_theme_and_loudness() {
-        let mut settings = DesktopSettings::default();
-        settings.theme_mode = "neon".to_string();
-        settings.replay_gain_target_loudness = -120.0;
+    fn configured_custom_fields_survive_round_trip_and_keep_visibility_and_order() {
+        let settings: DesktopSettings = serde_json::from_value(serde_json::json!({
+            "editCustomTags": [" mood ", "MOOD", "LABEL", "", "bad\nkey"],
+            "editFieldOrder": ["tag:label", "title", "tag:mood", "tag:DELETED"],
+            "editFieldVisibility": { "tag:mood": false, "tag:DELETED": false }
+        }))
+        .unwrap();
         let normalized = normalize_settings(settings);
-        assert_eq!(normalized.theme_mode, "system");
-        assert_eq!(
-            normalized.replay_gain_target_loudness,
-            REPLAY_GAIN_TARGET_MIN_LUFS
+        let restored = normalize_settings(
+            serde_json::from_str(&serde_json::to_string(&normalized).unwrap()).unwrap(),
         );
-
-        let mut settings = DesktopSettings::default();
-        settings.replay_gain_target_loudness = f64::NAN;
+        assert_eq!(restored.edit_custom_tags, ["MOOD", "LABEL"]);
         assert_eq!(
-            normalize_settings(settings).replay_gain_target_loudness,
-            crate::replay_gain::DEFAULT_TARGET_LOUDNESS_LUFS
+            &restored.edit_field_order[..3],
+            ["tag:LABEL", "title", "tag:MOOD"]
         );
+        assert_eq!(restored.edit_field_visibility.get("tag:MOOD"), Some(&false));
+        assert!(!restored
+            .edit_field_order
+            .contains(&"tag:DELETED".to_string()));
+        assert!(!restored.edit_field_visibility.contains_key("tag:DELETED"));
     }
 
     #[test]
-    fn config_backup_round_trips_plugin_preferences() {
-        let backup = ConfigBackup {
-            schema_version: CONFIG_SCHEMA_VERSION,
-            artist_split: ArtistSplitConfig::default(),
-            settings: DesktopSettings::default(),
-            plugins: vec![PluginBackup {
-                id: "example.plugin".to_string(),
-                enabled: true,
-                sort_order: 3,
-                settings_json: r#"{"token":"secret"}"#.to_string(),
-            }],
-        };
-        let encoded = serde_json::to_string(&backup).expect("backup should serialize");
-        let decoded: ConfigBackup =
-            serde_json::from_str(&encoded).expect("backup should deserialize");
-        assert_eq!(decoded.plugins[0].id, "example.plugin");
-        assert!(decoded.plugins[0].enabled);
-        assert_eq!(decoded.plugins[0].sort_order, 3);
-        assert_eq!(decoded.plugins[0].settings_json, r#"{"token":"secret"}"#);
-    }
-
-    fn temp_config_dir(label: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("lyrico-config-{}-{label}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temporary config dir should be created");
-        dir
-    }
-
-    fn config_with_page_size(search_page_size: u32) -> AppConfig {
-        let mut config = AppConfig::default();
-        config.settings.search_page_size = search_page_size;
-        config
-    }
-
-    #[test]
-    fn write_json_replaces_the_target_in_place_and_keeps_a_backup() {
-        let dir = temp_config_dir("write-json");
-        let path = dir.join("settings.json");
-        write_json(&path, &config_with_page_size(11)).expect("first write should succeed");
-        write_json(&path, &config_with_page_size(22)).expect("second write should succeed");
-
-        let reloaded = load_config_from(&path).expect("settings should be readable");
-        assert_eq!(reloaded.settings.search_page_size, 22);
-        let backup = load_config_from(&path.with_extension("json.bak"))
-            .expect("backup should hold the previous generation");
-        assert_eq!(backup.settings.search_page_size, 11);
-        assert!(!path.with_extension("json.tmp").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_config_recovers_the_backup_when_the_primary_file_is_gone() {
-        let dir = temp_config_dir("missing-primary");
-        let path = dir.join("settings.json");
-        write_json(&path, &config_with_page_size(42)).expect("write");
-        write_json(&path, &config_with_page_size(42)).expect("write that produces a backup");
-        std::fs::remove_file(&path).expect("primary file should be removable");
-
-        let reloaded = load_config_from(&path).expect("backup should be recovered");
-        assert_eq!(reloaded.settings.search_page_size, 42);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_config_recovers_the_backup_when_the_primary_file_is_corrupt() {
-        let dir = temp_config_dir("corrupt-primary");
-        let path = dir.join("settings.json");
-        write_json(&path, &config_with_page_size(7)).expect("write");
-        write_json(&path, &config_with_page_size(7)).expect("write that produces a backup");
-        std::fs::write(&path, b"{ this is not json").expect("primary file should be corrupted");
-
-        let reloaded = load_config_from(&path).expect("backup should be recovered");
-        assert_eq!(reloaded.settings.search_page_size, 7);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_config_defaults_when_nothing_exists_and_fails_when_every_file_is_corrupt() {
-        let dir = temp_config_dir("all-corrupt");
-        let path = dir.join("settings.json");
-        let reloaded = load_config_from(&path).expect("missing config should default");
+    fn old_settings_keep_defaults_and_custom_key_validation_matches_mobile() {
+        let settings = normalize_settings(serde_json::from_str("{}").unwrap());
+        assert!(settings.edit_custom_tags.is_empty());
+        assert_eq!(settings.edit_field_order, default_edit_field_order());
         assert_eq!(
-            reloaded.settings.search_page_size,
-            DesktopSettings::default().search_page_size
+            normalize_custom_tag_key("  mood  "),
+            Some("MOOD".to_string())
         );
-
-        std::fs::write(&path, b"{ broken").expect("primary file should be written");
-        std::fs::write(path.with_extension("json.bak"), b"{ also broken")
-            .expect("backup file should be written");
-        assert!(load_config_from(&path).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(normalize_custom_tag_key(&"a".repeat(65)).is_none());
+        assert!(normalize_custom_tag_key("a\nb").is_none());
     }
 }

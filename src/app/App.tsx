@@ -1,4 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App as AntApp, Button, ConfigProvider, Form, Spin, theme } from "antd";
 import enUS from "antd/locale/en_US";
 import zhCN from "antd/locale/zh_CN";
@@ -39,8 +41,8 @@ import {
 } from "../backend/audioApi";
 import { useLibrarySelection } from "../hooks/useLibrarySelection";
 import { AppErrorBoundary } from "../components/AppErrorBoundary";
+import { reportFrontendError } from "../backend/diagnostics";
 import { Shell } from "../components/Shell";
-import { TitleBar } from "../components/TitleBar";
 import { AppContextMenu } from "../components/AppContextMenu";
 import { SongDetails } from "../components/SongDetails";
 import { AlbumsPage } from "../pages/AlbumsPage";
@@ -49,6 +51,7 @@ import { FoldersPage } from "../pages/FoldersPage";
 import { SongsPage } from "../pages/SongsPage";
 import { defaultArtistSplitConfig, filterTracks, groupAlbums, groupArtists } from "../domain/library";
 import { completeTagForm, splitGenreValues } from "../domain/tagForm";
+import { filterHiddenCustomTagEdits } from "../domain/editFieldSettings";
 import { detectLyricsFormat } from "../backend/lyricsApi";
 import { invalidateCachedCovers, updateCachedCover } from "../hooks/useTrackCovers";
 import { applyBatchLibraryUpdate, libraryPathsToRefresh } from "../domain/libraryRefresh";
@@ -92,13 +95,14 @@ const defaultDesktopSettings: DesktopSettings = {
   artistPosterFolder: "",
   themeMode: "system",
   editFieldVisibility: {},
+  editCustomTags: [],
   editFieldOrder: ["basic", "track", "credits", "customTags", "replaygain", "lyrics", "cover"],
   renameCharacterMappings: {
     "\\": "＼", "/": "／", ":": "：", "*": "＊", "?": "？", "\"": "＂", "<": "＜", ">": "＞", "|": "｜",
   },
 };
 
-const desktopSettingsArrayFields = ["lyricLineOrder", "removeTagLineKeywords", "hiddenFolderPaths", "editFieldOrder"] as const;
+const desktopSettingsArrayFields = ["lyricLineOrder", "removeTagLineKeywords", "hiddenFolderPaths", "editFieldOrder", "editCustomTags"] as const;
 const desktopSettingsRecordFields = ["renameCharacterMappings", "editFieldVisibility"] as const;
 
 /**
@@ -152,6 +156,12 @@ export default function App() {
     document.documentElement.dataset.theme = darkTheme ? "dark" : "light";
   }, [darkTheme]);
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    void getCurrentWindow().setTheme(themeMode === "system" ? null : themeMode)
+      .catch(error => reportFrontendError("error", error, "window.setTheme"));
+  }, [themeMode]);
+
   return (
     <ConfigProvider
       locale={antLocale}
@@ -168,7 +178,7 @@ export default function App() {
         },
       }}
     >
-      <AntApp message={{ top: "calc(var(--titlebar-height) + 12px)", maxCount: 3 }} notification={{ placement: "bottomRight", bottom: 40, maxCount: 3 }}>
+      <AntApp message={{ top: 12, maxCount: 3 }} notification={{ placement: "bottomRight", bottom: 40, maxCount: 3 }}>
         {/* Outer boundary: a crash in LyricoDesktop itself must not blank the window. */}
         <AppErrorBoundary>
           <LyricoDesktop />
@@ -587,6 +597,7 @@ function LyricoDesktop() {
     try {
       await form.validateFields();
       const values = completeTagForm(form.getFieldsValue(true), selectedTrack);
+      values.customTags = filterHiddenCustomTagEdits(values.customTags, detailCustomTags, desktopSettings);
       const saved = await saveAudioTags(requestedPath, values);
       const nextTrack = replaceTrack(saved);
       if (!nextTrack) {
@@ -655,7 +666,17 @@ function LyricoDesktop() {
         replayGainTrackPeak: result.trackPeak,
         replayGainReferenceLoudness: result.referenceLoudness,
       });
-      notification.success({ title: t("messages.replayGainCalculated"), description: requestedPath });
+      if (result.warning) {
+        notification.warning({
+          title: t("messages.replayGainPartialAudio"),
+          description: t("messages.replayGainPartialAudioDetail", {
+            decoded: result.sampleCount,
+            declared: result.declaredSamples ?? result.sampleCount,
+          }),
+        });
+      } else {
+        notification.success({ title: t("messages.replayGainCalculated"), description: requestedPath });
+      }
     } catch (error) {
       publishReplayGainProgress({ jobId, path: requestedPath, percent: 0, status: String(error).toLowerCase().includes("cancelled") ? "cancelled" : "failed", message: String(error) });
       if (editingPathRef.current !== requestedPath) return;
@@ -1071,7 +1092,6 @@ function LyricoDesktop() {
 
   return (
     <>
-    <TitleBar />
     {!detailsMounted ? <Form form={form} component={false} /> : null}
       <AppErrorBoundary>
       <Shell
@@ -1095,6 +1115,8 @@ function LyricoDesktop() {
         track={selectedTrack}
         plugins={plugins}
         settings={desktopSettings}
+        originalCustomTags={detailCustomTags}
+        onChangeSettings={changeDesktopSettings}
         form={form}
         saving={saving}
         onSave={saveSelected}

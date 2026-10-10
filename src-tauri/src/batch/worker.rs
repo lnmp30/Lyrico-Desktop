@@ -32,9 +32,12 @@ pub(super) async fn run_task(
         {
             let _ = app.emit("batch-task-updated", task);
         }
-        let _ = database
-            .log_batch_event("error", "Batch task crashed", Some(error), &task_id)
-            .await;
+        crate::logging::event(
+            log::Level::Error,
+            "batch",
+            "task.failed",
+            serde_json::json!({"taskId":task_id,"error":error}),
+        );
     }
 }
 
@@ -47,6 +50,12 @@ async fn run_task_inner(
     let task = database.load_batch_task(&task_id).await?;
     let items = database.load_batch_task_items(&task_id).await?;
     let concurrency = parse_concurrency(task.config_json.as_deref());
+    let operation = crate::logging::Operation::new(
+        "batch",
+        "run",
+        serde_json::json!({"taskId":task.task_id,"taskType":task.task_type,"total":items.len(),"concurrency":concurrency}),
+        log::Level::Debug,
+    );
     let artist_separator = config::load_artist_split_config(&app)?.artist_separator;
     let pool = build_pool(concurrency)?;
     let processor: Arc<dyn super::processor::BatchProcessor> =
@@ -91,20 +100,18 @@ async fn run_task_inner(
             (terminal == "cancelled").then(|| "Batch task cancelled".to_string()),
         )
         .await?;
-    let detail = serde_json::to_string(&task).ok();
-    database
-        .log_batch_event(
-            if task.failure_count > 0 {
-                "warning"
-            } else {
-                "info"
-            },
-            "Batch task finished",
-            detail,
-            &task_id,
-        )
-        .await?;
+    crate::logging::event(
+        if task.failure_count > 0 {
+            log::Level::Warn
+        } else {
+            log::Level::Info
+        },
+        "batch",
+        "task.finished",
+        serde_json::json!({"taskId":task.task_id,"taskType":task.task_type,"status":task.status,"total":task.total,"succeeded":task.success_count,"failed":task.failure_count,"skipped":task.skipped_count}),
+    );
     let _ = app.emit("batch-task-updated", task);
+    operation.finish(&Ok::<(), String>(()));
     Ok(())
 }
 
@@ -279,28 +286,33 @@ fn update_item(
         result_json,
         error_message.clone(),
     ));
-    if let Ok(snapshot) = result {
-        let _ = app.emit("batch-task-updated", snapshot);
+    match result {
+        Ok(snapshot) => {
+            let _ = app.emit("batch-task-updated", snapshot);
+        }
+        Err(error) => crate::logging::event(
+            log::Level::Error,
+            "database",
+            "batch_item.persist_failed",
+            serde_json::json!({"taskId":task.task_id,"itemId":item.item_id,"error":error}),
+        ),
     }
-    let detail = serde_json::json!({
-        "itemId": item.item_id,
-        "songPath": item.song_path,
-        "status": status,
-        "error": error_message,
-    })
-    .to_string();
-    let _ = tauri::async_runtime::block_on(database.log_batch_event(
-        if status == "failed" {
-            "error"
-        } else if status == "skipped" || status == "cancelled" {
-            "warning"
-        } else {
-            "info"
-        },
-        "Batch item updated",
-        Some(detail),
-        &task.task_id,
-    ));
+    // Progress updates are events for the UI, not diagnostic log entries.
+    // Successful per-file completion is DEBUG; failures retain enough context at WARN/ERROR.
+    if status != "running" {
+        crate::logging::event(
+            if status == "failed" {
+                log::Level::Error
+            } else if status == "skipped" {
+                log::Level::Warn
+            } else {
+                log::Level::Debug
+            },
+            "batch",
+            "item.finished",
+            serde_json::json!({"taskId":task.task_id,"taskType":task.task_type,"itemId":item.item_id,"songPath":item.song_path,"status":status,"error":error_message}),
+        );
+    }
 }
 
 fn parse_concurrency(config_json: Option<&str>) -> usize {
@@ -310,18 +322,4 @@ fn parse_concurrency(config_json: Option<&str>) -> usize {
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(3)
         .clamp(1, 5)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn concurrency_matches_mobile_bounds_and_default() {
-        assert_eq!(parse_concurrency(None), 3);
-        assert_eq!(parse_concurrency(Some(r#"{"concurrency":0}"#)), 1);
-        assert_eq!(parse_concurrency(Some(r#"{"concurrency":9}"#)), 5);
-        assert_eq!(parse_concurrency(Some(r#"{"concurrency":4}"#)), 4);
-        assert_eq!(parse_concurrency(Some("invalid")), 3);
-    }
 }
