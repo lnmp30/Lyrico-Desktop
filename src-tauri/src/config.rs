@@ -35,6 +35,17 @@ pub(crate) struct DesktopSettings {
     pub(crate) edit_field_visibility: BTreeMap<String, bool>,
     pub(crate) edit_field_order: Vec<String>,
     pub(crate) edit_custom_tags: Vec<String>,
+    pub(crate) library_sorts: BTreeMap<String, LibrarySort>,
+    pub(crate) batch_operation: String,
+    pub(crate) close_to_tray: bool,
+}
+
+/// 列表页排序偏好：key/direction 的取值合法性由前端校验（字段清单只在前端维护）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LibrarySort {
+    pub(crate) key: String,
+    pub(crate) direction: String,
 }
 
 pub(crate) const EDIT_FIELD_KEYS: &[&str] = &[
@@ -83,6 +94,9 @@ impl Default for DesktopSettings {
             edit_field_visibility: BTreeMap::new(),
             edit_field_order: default_edit_field_order(),
             edit_custom_tags: Vec::new(),
+            library_sorts: BTreeMap::new(),
+            batch_operation: "replaygain".to_string(),
+            close_to_tray: false,
         }
     }
 }
@@ -114,10 +128,13 @@ pub(crate) fn save_desktop_settings(
     settings: DesktopSettings,
 ) -> Result<(), String> {
     let settings = normalize_settings(settings);
+    let close_to_tray = settings.close_to_tray;
     let mut config = load_config(app)?;
     config.schema_version = CONFIG_SCHEMA_VERSION;
     config.settings = settings;
-    write_json(&resolve_data_paths(app)?.settings, &config)
+    write_json(&resolve_data_paths(app)?.settings, &config)?;
+    crate::tray::sync_visibility(app, close_to_tray);
+    Ok(())
 }
 
 fn normalize_settings(mut settings: DesktopSettings) -> DesktopSettings {
@@ -171,6 +188,9 @@ fn normalize_settings(mut settings: DesktopSettings) -> DesktopSettings {
         .map(|(key, value)| (normalize_edit_field_code(key), value))
         .filter(|(key, _)| EDIT_FIELD_KEYS.contains(&key.as_str()) || custom_codes.contains(key))
         .collect();
+    settings
+        .library_sorts
+        .retain(|_, sort| !sort.key.is_empty() && matches!(sort.direction.as_str(), "asc" | "desc"));
     settings
 }
 
@@ -393,7 +413,9 @@ pub(crate) fn import_config(
         settings: backup.settings,
     };
     config.settings = normalize_settings(config.settings);
+    let close_to_tray = config.settings.close_to_tray;
     write_json(&resolve_data_paths(app)?.settings, &config)?;
+    crate::tray::sync_visibility(app, close_to_tray);
     Ok((load_desktop_settings(app)?, backup.plugins))
 }
 
