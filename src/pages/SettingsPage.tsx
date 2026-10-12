@@ -86,7 +86,17 @@ export function SettingsPage({
                       ]}
                     />
                   </SettingRow>
-                  <SettingRow title={t("settings.closeToTray")} description={t("settings.closeToTrayHint")}><Switch checked={settings.closeToTray} onChange={(value) => onChangeSettings({ ...settings, closeToTray: value, closeToTrayPrompted: true })} /></SettingRow>
+                  <SettingRow title={t("settings.closeToTray")}>
+                    <Select<"tray" | "quit">
+                      aria-label={t("settings.closeToTray")}
+                      value={settings.closeToTray ? "tray" : "quit"}
+                      onSelect={value => onChangeSettings({ ...settings, closeToTray: value === "tray", closeToTrayPrompted: true })}
+                      options={[
+                        { value: "tray", label: t("common.closePrompt.tray") },
+                        { value: "quit", label: t("common.closePrompt.close") },
+                      ]}
+                    />
+                  </SettingRow>
                 </SettingsSection>
               ),
             },
@@ -253,7 +263,7 @@ function SettingsSection({ title, children }: { title: string; children: ReactNo
 /**
  * Field order editor. Ordering works on blocks, not raw fields: the ReplayGain values are one
  * measurement and always move as one adjacent group. A composite row opens a dialog to reorder
- * and toggle its members, mirroring the mobile app's component sheet. See docs/ui-layout.md §9.6.
+ * and toggle its members, mirroring the mobile app's component sheet. See docs/ui-layout.md.
  */
 function EditFieldOrderEditor({ settings, onChange }: { settings: DesktopSettings; onChange: (settings: DesktopSettings) => void }) {
   const { t } = useTranslation();

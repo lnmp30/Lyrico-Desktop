@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { App as AntApp, Button, ConfigProvider, Form, Modal, Spin, theme } from "antd";
+import { App as AntApp, Button, ConfigProvider, Form, Spin, theme } from "antd";
 import enUS from "antd/locale/en_US";
 import zhCN from "antd/locale/zh_CN";
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -41,6 +41,7 @@ import {
   setTrayLabels,
 } from "../backend/audioApi";
 import { useBlockMouseSideButtons } from "../hooks/useGoUpOnMouseBack";
+import { CloseBehaviorDialog } from "../components/CloseBehaviorDialog";
 import { useLibrarySelection } from "../hooks/useLibrarySelection";
 import { AppErrorBoundary } from "../components/AppErrorBoundary";
 import { reportFrontendError } from "../backend/diagnostics";
@@ -57,7 +58,7 @@ import { completeTagForm, splitGenreValues } from "../domain/tagForm";
 import { filterHiddenCustomTagEdits } from "../domain/editFieldSettings";
 import { detectLyricsFormat } from "../backend/lyricsApi";
 import { invalidateCachedCovers, updateCachedCover } from "../hooks/useTrackCovers";
-import { applyBatchLibraryUpdate, libraryPathsToRefresh } from "../domain/libraryRefresh";
+import { applyBatchLibraryUpdate, applyLibraryTrackUpdate, libraryPathsToRefresh, type LibraryTrackUpdate } from "../domain/libraryRefresh";
 import {
   getLanguagePreference,
   resolveLanguage,
@@ -138,6 +139,8 @@ function normalizeDesktopSettings(stored: unknown): DesktopSettings {
     const value = merged[key];
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       merged[key] = { ...(defaultDesktopSettings[key] as Record<string, unknown>) };
+    } else {
+      merged[key] = { ...value };
     }
   }
   if (typeof merged.artistPosterFolder !== "string") merged.artistPosterFolder = defaultDesktopSettings.artistPosterFolder;
@@ -265,12 +268,16 @@ function LyricoDesktop() {
   const [plugins, setPlugins] = useState<SourcePlugin[]>([]);
   const [artistSplitConfig, setArtistSplitConfig] = useState<ArtistSplitConfig>(defaultArtistSplitConfig);
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(defaultDesktopSettings);
+  const desktopSettingsRef = useRef(desktopSettings);
+  const settingsLoad = useRef<Promise<void>>(Promise.resolve());
+  desktopSettingsRef.current = desktopSettings;
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(getLanguagePreference);
   const [scanProgress, setScanProgress] = useState<ScanProgress>();
   const [form] = Form.useForm<TagForm>();
   const detailRequest = useRef(0);
   const activeFolderScans = useRef(new Set<string>());
+  const staleDetailPaths = useRef(new Set<string>());
   const folderScanQueue = useRef<Promise<void>>(Promise.resolve());
   const editingPathRef = useRef<string | undefined>(undefined);
   const artistSplitSaveQueue = useRef<Promise<void>>(Promise.resolve());
@@ -399,8 +406,14 @@ function LyricoDesktop() {
   }, [artists, desktopSettings.artistPosterFolder]);
 
   useEffect(() => {
-    Promise.all([loadLibraryFolders(), loadLibraryTracks(), loadArtistSplitConfig(), loadSourcePlugins(), loadDesktopSettings()])
-      .then(([storedFolders, storedTracks, storedArtistSplitConfig, storedPlugins, storedSettings]) => {
+    settingsLoad.current = loadDesktopSettings().then(stored => {
+      const next = normalizeDesktopSettings(stored);
+      desktopSettingsRef.current = next;
+      setDesktopSettings(next);
+    });
+    void settingsLoad.current.catch(error => reportFrontendError("error", error, "settings.load"));
+    Promise.all([loadLibraryFolders(), loadLibraryTracks(), loadArtistSplitConfig(), loadSourcePlugins()])
+      .then(([storedFolders, storedTracks, storedArtistSplitConfig, storedPlugins]) => {
         setFolders(deduplicateFolders(storedFolders));
         setTracks(storedTracks);
         setSelectedFolderPath(storedFolders[0]?.path);
@@ -408,15 +421,35 @@ function LyricoDesktop() {
         setSelectedPaths([]);
         setArtistSplitConfig(storedArtistSplitConfig);
         setPlugins(storedPlugins);
-        setDesktopSettings(normalizeDesktopSettings(storedSettings));
       })
       .catch(() => {
         setFolders([]);
         setTracks([]);
         setPlugins([]);
-        setDesktopSettings(defaultDesktopSettings);
       });
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    void listen<LibraryTrackUpdate>("library-track-updated", ({ payload }) => {
+      if (disposed) return;
+      staleDetailPaths.current.add(normalizePath(payload.previousPath));
+      invalidateCachedCovers([payload.previousPath, ...(payload.track ? [payload.track.path] : [])]);
+      setTracks((current) => applyLibraryTrackUpdate(current, payload));
+      const nextPath = payload.track?.path;
+      setSelectedPath((current) => current && samePath(current, payload.previousPath) ? nextPath : current);
+      setSelectedPaths((current) => current.flatMap((path) => samePath(path, payload.previousPath) ? nextPath ? [nextPath] : [] : [path]));
+      // A batch update must not replace an editor draft; reopening reads the saved file.
+      if (!nextPath || !samePath(nextPath, payload.previousPath)) {
+        setDetailTrack((current) => current && samePath(current.path, payload.previousPath) ? undefined : current);
+      }
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    }).catch((error) => reportFrontendError("error", error, "library.listen"));
+    return () => { disposed = true; unlisten?.(); };
+  }, [setSelectedPaths]);
 
   useEffect(() => {
     let disposed = false;
@@ -441,6 +474,7 @@ function LyricoDesktop() {
           const refreshPaths = libraryPathsToRefresh(payload.taskType, items);
           const refreshed = refreshPaths.length ? await loadLibraryTracksByPaths(refreshPaths) : [];
           if (disposed) return;
+          for (const path of refreshPaths) staleDetailPaths.current.add(normalizePath(path));
           if (payload.taskType !== "exportLyrics" && payload.taskType !== "exportCover") {
             invalidateCachedCovers([
               ...items.filter((item) => item.status === "succeeded").map((item) => item.songPath),
@@ -463,7 +497,7 @@ function LyricoDesktop() {
           setSelectedPath((current) => current ? renamedPaths.get(normalizePath(current)) ?? current : current);
           setSelectedPaths((current) => current.map((path) => renamedPaths.get(normalizePath(path)) ?? path));
           setDetailTrack((current) => current && renamedPaths.has(normalizePath(current.path)) ? undefined : current);
-        }).catch(() => undefined);
+        }).catch((error) => reportFrontendError("error", error, "library.batchRefresh"));
       }
     }).then((dispose) => {
       if (disposed) dispose();
@@ -549,7 +583,12 @@ function LyricoDesktop() {
     for (const path of newPaths) await scanAndMergeFolder(path);
   }
 
-  async function scanAndMergeFolder(path: string) {
+  async function refreshLibrary() {
+    if (activeFolderScans.current.size > 0) return;
+    for (const folder of deduplicateFolders(folders)) await scanAndMergeFolder(folder.path, false);
+  }
+
+  async function scanAndMergeFolder(path: string, selectFolder = true) {
     const scanKey = folderPathKey(path);
     if (activeFolderScans.current.has(scanKey)) return;
     activeFolderScans.current.add(scanKey);
@@ -560,11 +599,13 @@ function LyricoDesktop() {
       try {
         const folderTracks = await scanFolder(path);
         const scannedAt = new Date().toISOString();
+        for (const track of folderTracks) staleDetailPaths.current.add(normalizePath(track.path));
+        invalidateCachedCovers(folderTracks.map((track) => track.path));
         setTracks((current) => mergeFolderTracks(current, folderTracks, path));
         setFolders((current) =>
           upsertFolder(current, { path, trackCount: folderTracks.length, status: "ready", lastScannedAt: scannedAt }),
         );
-        setSelectedFolderPath(path);
+        if (selectFolder) setSelectedFolderPath(path);
         setSelectedPath((current) => current ?? folderTracks[0]?.path);
         notification.success({ title: t("scanProgress.phase.completed"), description: t("messages.scanned", { count: folderTracks.length }) });
       } catch (error) {
@@ -594,9 +635,10 @@ function LyricoDesktop() {
     setSelectedPath(path);
     setDetailsMounted(true);
     setDetailsOpen(true);
-    if (detailTrack?.path === path) return;
+    if (detailTrack?.path === path && !staleDetailPaths.current.has(normalizePath(path))) return;
 
     const requestId = ++detailRequest.current;
+    staleDetailPaths.current.delete(normalizePath(path));
     setDetailTrack(undefined);
     setDetailsLoading(true);
     try {
@@ -609,6 +651,7 @@ function LyricoDesktop() {
         setDetailCustomTags(customTags);
       }
     } catch (error) {
+      staleDetailPaths.current.add(normalizePath(path));
       if (requestId === detailRequest.current) message.error(String(error));
     } finally {
       if (requestId === detailRequest.current) setDetailsLoading(false);
@@ -861,6 +904,7 @@ function LyricoDesktop() {
   function replaceTrack(value: unknown) {
     const nextTrack = asAudioTrack(value);
     if (!nextTrack) return undefined;
+    staleDetailPaths.current.delete(normalizePath(nextTrack.path));
     setTracks((current) => current.map((track) => (samePath(track.path, nextTrack.path) ? nextTrack : track)));
     updateCachedCover(nextTrack.path, nextTrack.coverDataUrl);
     return nextTrack;
@@ -983,6 +1027,7 @@ function LyricoDesktop() {
   }
 
   function changeDesktopSettings(settings: DesktopSettings) {
+    desktopSettingsRef.current = settings;
     setDesktopSettings(settings);
     settingsSaveQueue.current = settingsSaveQueue.current
       .then(() => saveDesktopSettings(settings))
@@ -993,14 +1038,19 @@ function LyricoDesktop() {
 
   // 记录用户对关闭方式的选择后重新发起关闭请求，由托盘拦截逻辑决定隐藏还是真正关闭
   function resolveClosePrompt(toTray: boolean) {
-    const next = { ...desktopSettings, closeToTray: toTray, closeToTrayPrompted: true };
-    void saveDesktopSettings(next)
-      .then(() => {
-        setDesktopSettings(next);
+    const saved = settingsSaveQueue.current.then(() => settingsLoad.current).then(async () => {
+      const next = { ...desktopSettingsRef.current, closeToTray: toTray, closeToTrayPrompted: true };
+      await saveDesktopSettings(next);
+      desktopSettingsRef.current = next;
+      setDesktopSettings(next);
+    });
+    // Keep the queue usable after a failure; the dialog reports this save's error.
+    settingsSaveQueue.current = saved.catch(() => undefined);
+    return saved
+      .then(async () => {
+        await getCurrentWindow().close();
         setClosePromptOpen(false);
-        return getCurrentWindow().close();
-      })
-      .catch(error => message.error(String(error)));
+      });
   }
 
   function changeLibrarySort(page: LibrarySortPage, sort?: LibrarySort) {
@@ -1046,6 +1096,8 @@ function LyricoDesktop() {
       case "albums":
         return (
           <AlbumsPage
+            onRefreshLibrary={refreshLibrary}
+            canRefreshLibrary={folders.length > 0}
             selectedCollectionKeys={selectedCollectionKeys}
             onToggleCollection={onToggleCollection}
             albums={albums}
@@ -1069,6 +1121,8 @@ function LyricoDesktop() {
       case "artists":
         return (
           <ArtistsPage
+            onRefreshLibrary={refreshLibrary}
+            canRefreshLibrary={folders.length > 0}
             selectedCollectionKeys={selectedCollectionKeys}
             onToggleCollection={onToggleCollection}
             artists={artists}
@@ -1093,6 +1147,7 @@ function LyricoDesktop() {
       case "folders":
         return (
           <FoldersPage
+            onRefreshLibrary={refreshLibrary}
             folders={folders}
             tracks={tracks}
             loading={loading}
@@ -1150,6 +1205,8 @@ function LyricoDesktop() {
         return (
           <SongsPage
             onAddFolders={addFolders}
+            onRefreshLibrary={refreshLibrary}
+            canRefreshLibrary={folders.length > 0}
             tracks={filteredTracks}
             query={query}
             selectedPaths={selectedPaths}
@@ -1218,19 +1275,11 @@ function LyricoDesktop() {
     </Shell>
       </AppErrorBoundary>
     <AppContextMenu onNavigate={changeView} />
-    <Modal
-      title={t("common.closePrompt.title")}
+    <CloseBehaviorDialog
       open={closePromptOpen}
-      closable={false}
-      keyboard={false}
-      maskClosable={false}
-      footer={[
-        <Button key="close" onClick={() => resolveClosePrompt(false)}>{t("common.closePrompt.close")}</Button>,
-        <Button key="tray" type="primary" onClick={() => resolveClosePrompt(true)}>{t("common.closePrompt.tray")}</Button>,
-      ]}
-    >
-      {t("common.closePrompt.description")}
-    </Modal>
+      onCancel={() => setClosePromptOpen(false)}
+      onConfirm={resolveClosePrompt}
+    />
     </>
   );
 }
