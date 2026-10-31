@@ -172,15 +172,18 @@ fn classify_tracks(lines: Vec<LyricsLine>) -> Vec<LyricsTrack> {
     let mut translation = Vec::new();
     let mut romanization = Vec::new();
     for (index, (_, mut group)) in groups.into_iter().enumerate() {
-        let mut first = group.remove(0);
-        let first_text = first.visible_text();
+        let mut original_line = {
+            let index = original_line_index(&group);
+            group.remove(index)
+        };
+        let original_text = original_line.visible_text();
         let link_key = format!("L{}", index + 1);
-        first.link_key = Some(link_key.clone());
-        original.push(first);
+        original_line.link_key = Some(link_key.clone());
+        original.push(original_line);
         for mut candidate in group {
             candidate.link_key = Some(link_key.clone());
             candidate.words.clear();
-            if looks_like_romanization(&candidate.text, &first_text)
+            if looks_like_romanization(&candidate.visible_text(), &original_text)
                 && !romanization
                     .iter()
                     .any(|line: &LyricsLine| line.link_key.as_deref() == Some(link_key.as_str()))
@@ -199,6 +202,17 @@ fn classify_tracks(lines: Vec<LyricsLine>) -> Vec<LyricsTrack> {
         tracks.push(LyricsTrack::new(TrackType::Romanization, romanization));
     }
     tracks
+}
+
+/// 同一时间戳下含假名的行才是日文原文，因此不能默认取第一行。
+fn original_line_index(lines: &[LyricsLine]) -> usize {
+    static KANA: OnceLock<Regex> = OnceLock::new();
+    let kana =
+        KANA.get_or_init(|| Regex::new(r"[\p{Hiragana}\p{Katakana}]").expect("valid kana regex"));
+    lines
+        .iter()
+        .position(|line| kana.is_match(&line.visible_text()))
+        .unwrap_or(0)
 }
 
 fn looks_like_romanization(value: &str, original: &str) -> bool {
